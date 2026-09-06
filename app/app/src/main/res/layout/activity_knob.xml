@@ -172,99 +172,15 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 权限申请：风格跟上面一致，颜色随权限状态变化（见
+        <!-- 权限申请按钮行：子按钮由 KnobActivity 按 PlatformConfig 动态生成
+             （一行内平分；各平台带哪些权限、图标/文案全由 PlatformConfig 决定，
+             布局里不写死任何平台专属权限）。颜色随权限状态变化（见
              KnobActivity.updatePermButtonState）。 -->
         <LinearLayout
+            android:id="@+id/permContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginTop="6dp">
-
-            <LinearLayout
-                android:id="@+id/btnReqAcCommon"
-                android:layout_width="0dp"
-                android:layout_height="60dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="@drawable/bg_btn_red"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="🌡️"
-                    android:textSize="22sp" />
-
-                <TextView
-                    android:id="@+id/tvReqAcCommonLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="AC_COMMON"
-                    android:textSize="10sp"
-                    android:textColor="#C62828"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/btnReqSettingCommon"
-                android:layout_width="0dp"
-                android:layout_height="60dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="@drawable/bg_btn_red"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="⚙️"
-                    android:textSize="22sp" />
-
-                <TextView
-                    android:id="@+id/tvReqSettingCommonLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="SETTING_COMMON"
-                    android:textSize="10sp"
-                    android:textColor="#C62828"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/btnReqBluetooth"
-                android:layout_width="0dp"
-                android:layout_height="60dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_red"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="📶"
-                    android:textSize="22sp" />
-
-                <TextView
-                    android:id="@+id/tvReqBluetoothLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="蓝牙权限"
-                    android:textSize="10sp"
-                    android:textColor="#C62828"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-        </LinearLayout>
+            android:layout_marginTop="6dp" />
     </LinearLayout>
 </LinearLayout>

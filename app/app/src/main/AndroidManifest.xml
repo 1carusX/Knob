@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 通用基座：不含任何 BYDAUTO 权限——该组权限是比亚迪车机专属，由 byd
+     flavor 的 src/byd/AndroidManifest.xml 在编译期合入（generic 变体不带）。
+     探测期残留的 QUERY_ALL_PACKAGES / WRITE_SECURE_SETTINGS 已一并移除。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 探测用权限：读已安装应用 -->
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-
-    <!-- 蓝牙：权限只能由壳的 manifest 声明，实际使用方是插件自己的
-         BleManager（plugin/.../plugin/BleManager.kt），对已配对的 knob 发起
-         GATT 写入 -->
+    <!-- 蓝牙：权限只能由壳的 manifest 声明（所有平台都需要），实际使用方是
+         插件自己的 BleManager（plugin/.../plugin/BleManager.kt），对已配对的
+         knob 发起 GATT 写入 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
@@ -16,15 +16,6 @@
          位置，可以不额外弹定位权限；更早的系统 BLE 扫描本身就要求定位权限 -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
-
-    <!-- 车机厂商车控 HAL 权限（座椅通风在 Setting 设备，空调在 AC 设备） -->
-    <uses-permission android:name="android.permission.BYDAUTO_SETTING_GET" />
-    <uses-permission android:name="android.permission.BYDAUTO_SETTING_SET" />
-    <uses-permission android:name="android.permission.BYDAUTO_SETTING_COMMON" />
-    <uses-permission android:name="android.permission.BYDAUTO_AC_GET" />
-    <uses-permission android:name="android.permission.BYDAUTO_AC_SET" />
-    <uses-permission android:name="android.permission.BYDAUTO_AC_COMMON" />
-    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
 
     <!-- 开机自启：见 BootReceiver -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

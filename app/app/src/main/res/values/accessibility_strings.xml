@@ -1,4 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="accessibility_desc">用于探测车机窗口控件结构，帮助判断车机能否被第三方控制。不会采集个人数据。</string>
-</resources>

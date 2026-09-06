@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.WindowManager
 import android.widget.LinearLayout
@@ -25,18 +26,24 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * 壳主界面：插件页面容器 + 日志/按钮调试面板（信息全进日志，不单独占 UI）。
  * 车控逻辑已全部移入插件。
+ *
+ * 权限按钮按 [PlatformConfig] 动态生成：平台要申请哪些权限、图标/文案全由
+ * flavor 决定，本文件不含任何平台专属权限字符串（generic 变体只有蓝牙按钮）。
  */
 class KnobActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityKnobBinding
 
-    private val REQUEST_AC_COMMON_PERM = 2001
-    private val REQUEST_BLUETOOTH_PERM = 2002
-    private val REQUEST_SETTING_COMMON_PERM = 2003
+    companion object {
+        // 平台权限按钮的请求码基准（+下标）；蓝牙单独一个码
+        private const val REQUEST_RUNTIME_PERM_BASE = 3000
+        private const val REQUEST_BLUETOOTH_PERM = 2000
+    }
 
     // 选择 plugin.dex（SAF，无需存储权限）
     private val pickPluginLauncher =
@@ -47,6 +54,11 @@ class KnobActivity : AppCompatActivity() {
             }
             importPlugin(uri)
         }
+
+    // 动态生成的权限按钮行（含平台行与蓝牙行），供刷新红/绿状态用
+    private class PermCell(val row: LinearLayout, val label: TextView, val perm: String)
+    private val runtimeCells = mutableListOf<PermCell>()
+    private var bluetoothCell: PermCell? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,15 +85,177 @@ class KnobActivity : AppCompatActivity() {
         binding.btnSaveLog.setOnClickListener { saveLog() }
 
         // ⚠️ 坑：权限曾在 onResume() 自动发起，这台设备上 onResume 会被系统高频
-        // 反复触发，无条件重复请求权限直接死循环——改成三个按钮手动触发，时机
-        // 由用户决定，不会有意外弹窗。
-        binding.btnReqAcCommon.setOnClickListener { requestSinglePermission("android.permission.BYDAUTO_AC_COMMON", REQUEST_AC_COMMON_PERM) }
-        binding.btnReqSettingCommon.setOnClickListener { requestSinglePermission("android.permission.BYDAUTO_SETTING_COMMON", REQUEST_SETTING_COMMON_PERM) }
-        binding.btnReqBluetooth.setOnClickListener { requestBluetoothPermission() }
+        // 反复触发，无条件重复请求权限直接死循环——改成按钮手动触发，时机由用户
+        // 决定。按钮内容来自 PlatformConfig：generic 只生成蓝牙一行。
+        buildPermissionUi()
         refreshPermButtonStates()
 
         // 插件已在 Application.onCreate 同步加载完，这里把页面容器交给它
         bindPluginUi()
+    }
+
+    // ==================== 权限按钮（PlatformConfig 驱动，动态生成） ====================
+
+    /**
+     * 在 permContainer 里按 [PlatformConfig.runtimePerms] 生成权限按钮行，并追加
+     * 蓝牙行（所有平台都需要）。行内权重均分，观感与旧版静态三按钮一致。
+     */
+    private fun buildPermissionUi() {
+        val container = binding.permContainer
+        container.removeAllViews()
+        runtimeCells.clear()
+        bluetoothCell = null
+
+        val cellHeight = resources.getDimensionPixelSize(R.dimen.perm_cell_height)
+        val perms = PlatformConfig.runtimePerms
+        perms.forEachIndexed { index, p ->
+            val (row, label) = newPermCell(p.icon, p.label, cellHeight, hasEndMargin = index < perms.lastIndex)
+            row.setOnClickListener { requestSinglePermission(p.perm, p.label, REQUEST_RUNTIME_PERM_BASE + index) }
+            runtimeCells += PermCell(row, label, p.perm)
+            container.addView(row)
+        }
+
+        val (btRow, btLabel) = newPermCell("📶", "蓝牙权限", cellHeight, hasEndMargin = false)
+        btRow.setOnClickListener { requestBluetoothPermission() }
+        bluetoothCell = PermCell(btRow, btLabel, android.Manifest.permission.BLUETOOTH_CONNECT)
+        container.addView(btRow)
+    }
+
+    /** 生成一个权限按钮：竖排「图标 + 文字」，圆角色块底，样式同「选择插件」那排 */
+    private fun newPermCell(icon: String, labelText: String, height: Int, hasEndMargin: Boolean): Pair<LinearLayout, TextView> {
+        val iconView = TextView(this).apply {
+            text = icon
+            textSize = 24f
+            gravity = Gravity.CENTER
+        }
+        val label = TextView(this).apply {
+            text = labelText
+            textSize = 10f
+            setTextColor(Color.parseColor("#C62828"))
+            gravity = Gravity.CENTER
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundResource(R.drawable.bg_btn_red)
+            isClickable = true
+            isFocusable = true
+            foreground = selectableItemForeground()
+            layoutParams = LinearLayout.LayoutParams(0, height, 1f).apply {
+                if (hasEndMargin) rightMargin = dp(4)
+            }
+            addView(iconView)
+            addView(label, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(2) })
+        }
+        return row to label
+    }
+
+    /** 按实际权限状态刷新权限按钮：未授权=红可点，已授权=绿不可点（授权后无"撤销"操作） */
+    private fun refreshPermButtonStates() {
+        runtimeCells.forEach { cell ->
+            val granted = checkSelfPermission(cell.perm) == PackageManager.PERMISSION_GRANTED
+            updatePermButtonState(cell.row, cell.label, granted)
+        }
+        val bt = bluetoothCell ?: return
+        // 蓝牙这一格是特例，不能只看 bt.perm 那一个权限——API 31+ 需要
+        // CONNECT+SCAN 都到位，更早系统靠 ACCESS_FINE_LOCATION。
+        val bleGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        } else {
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+        updatePermButtonState(bt.row, bt.label, bleGranted)
+    }
+
+    private fun updatePermButtonState(row: LinearLayout, label: TextView, granted: Boolean) {
+        row.setBackgroundResource(if (granted) R.drawable.bg_btn_green else R.drawable.bg_btn_red)
+        label.setTextColor(Color.parseColor(if (granted) "#2E7D32" else "#C62828"))
+        row.isClickable = !granted
+        row.isFocusable = !granted
+        row.foreground = if (granted) null else selectableItemForeground()
+    }
+
+    /** ⚠️ 每次取一份新的 ?attr/selectableItemBackground drawable——不同 View 不能共用同一实例（内部状态会互相打架） */
+    private fun selectableItemForeground(): Drawable? {
+        val ta = obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground))
+        val drawable = ta.getDrawable(0)
+        ta.recycle()
+        return drawable
+    }
+
+    /** 申请单个 dangerous 级运行时权限（平台按钮点击时调用；label 来自 PlatformConfig） */
+    private fun requestSinglePermission(perm: String, label: String, requestCode: Int) {
+        LogSink.section("申请权限：$label")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            LogSink.append("⚠️ 当前系统无需运行时申请（API < 23）")
+            return
+        }
+        if (checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED) {
+            LogSink.append("✅ 已经是授权状态")
+            refreshPermButtonStates()
+            return
+        }
+        requestPermissions(arrayOf(perm), requestCode)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_BLUETOOTH_PERM) {
+            // API 31+ 这里一次申请 CONNECT+SCAN 两个权限，逐个检查而不是只看 grantResults[0]
+            val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            LogSink.append(if (allGranted) "✅ 蓝牙连接/扫描权限已授权" else "❌ 蓝牙权限未完全授权，自动连接/配对可能不可用")
+            // 不在这里主动触发连接——插件自己的 BleManager 有 5s 重连轮询，
+            // 权限刚授权的话最多等一个轮询周期就会自己接上，不需要壳插手。
+        } else {
+            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            // 平台权限：用返回值里的权限名回查 PlatformConfig 拿显示名打日志
+            val perm = permissions.firstOrNull()
+            val label = PlatformConfig.runtimePerms.firstOrNull { it.perm == perm }?.label ?: perm.orEmpty()
+            LogSink.append(if (granted) "✅ $label 已授权" else "❌ $label 未授权")
+        }
+        refreshPermButtonStates()
+    }
+
+    // ==================== 蓝牙权限申请 ====================
+
+    /**
+     * BLUETOOTH_CONNECT/BLUETOOTH_SCAN 是 API 31+ 的运行时权限，一起申请
+     * （插件自己的 BleManager 找不到已知/已配对设备时会自己扫描+配对，两个
+     * 都要，但只有 Activity 能发起权限申请，插件够不到，得由壳代劳）；
+     * 更早系统连接靠 manifest 里 maxSdkVersion=30 的旧 BLUETOOTH/BLUETOOTH_ADMIN
+     * （安装时自动授予），扫描则要 ACCESS_FINE_LOCATION。由「蓝牙权限」按钮触发。
+     * 申请到手之后不用管后续连接——插件的重连轮询会自己接上。
+     */
+    private fun requestBluetoothPermission() {
+        LogSink.section("蓝牙权限申请")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                LogSink.append("当前系统无需申请 BLUETOOTH_CONNECT（API < 31），定位权限已就绪")
+            } else {
+                LogSink.append("请求 ACCESS_FINE_LOCATION 权限（本系统 BLE 扫描的前提）")
+                requestPermissions(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_BLUETOOTH_PERM)
+            }
+            return
+        }
+        val needed = listOf(
+            android.Manifest.permission.BLUETOOTH_CONNECT,
+            android.Manifest.permission.BLUETOOTH_SCAN
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (needed.isEmpty()) {
+            LogSink.append("✅ 蓝牙连接/扫描权限已授权")
+            refreshPermButtonStates()
+        } else {
+            LogSink.append("请求权限：${needed.joinToString()}")
+            requestPermissions(needed.toTypedArray(), REQUEST_BLUETOOTH_PERM)
+        }
     }
 
     /** 若插件已加载，把右半边容器交给插件渲染 */
@@ -158,17 +332,12 @@ class KnobActivity : AppCompatActivity() {
         LogSink.append("指纹: ${Build.FINGERPRINT}")
     }
 
+    /** 平台专属权限状态；列表为空（generic）则整段跳过 */
     private fun logPermissionStatus() {
-        val perms = listOf(
-            "android.permission.BYDAUTO_AC_COMMON",
-            "android.permission.BYDAUTO_AC_GET",
-            "android.permission.BYDAUTO_AC_SET",
-            "android.permission.BYDAUTO_SETTING_COMMON",
-            "android.permission.BYDAUTO_SETTING_GET",
-            "android.permission.BYDAUTO_SETTING_SET"
-        )
+        val perms = PlatformConfig.statusPermissions
+        if (perms.isEmpty()) return
         val pm = packageManager
-        LogSink.section("BYDAUTO 权限状态")
+        LogSink.section("平台权限状态")
         perms.forEach { perm ->
             val granted = try {
                 pm.checkPermission(perm, packageName) == PackageManager.PERMISSION_GRANTED
@@ -231,118 +400,5 @@ class KnobActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== BYDAUTO 运行时权限申请 ====================
-
-    /** 申请单个 dangerous 级运行时权限，按钮点击时调用 */
-    private fun requestSinglePermission(perm: String, requestCode: Int) {
-        val shortName = perm.removePrefix("android.permission.")
-        LogSink.section("申请权限：$shortName")
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            LogSink.append("⚠️ 当前系统无需运行时申请（API < 23）")
-            return
-        }
-        if (checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED) {
-            LogSink.append("✅ 已经是授权状态")
-            refreshPermButtonStates()
-            return
-        }
-        requestPermissions(arrayOf(perm), requestCode)
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-        when (requestCode) {
-            REQUEST_AC_COMMON_PERM -> {
-                LogSink.append(if (granted) "✅ BYDAUTO_AC_COMMON 已授权" else "❌ BYDAUTO_AC_COMMON 未授权")
-            }
-            REQUEST_SETTING_COMMON_PERM -> {
-                LogSink.append(if (granted) "✅ BYDAUTO_SETTING_COMMON 已授权" else "❌ BYDAUTO_SETTING_COMMON 未授权")
-            }
-            REQUEST_BLUETOOTH_PERM -> {
-                // API 31+ 这里一次申请 CONNECT+SCAN 两个权限，逐个检查而不是只看 grantResults[0]
-                val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-                LogSink.append(if (allGranted) "✅ 蓝牙连接/扫描权限已授权" else "❌ 蓝牙权限未完全授权，自动连接/配对可能不可用")
-                // 不在这里主动触发连接——插件自己的 BleManager 有 5s 重连轮询，
-                // 权限刚授权的话最多等一个轮询周期就会自己接上，不需要壳插手。
-            }
-        }
-        refreshPermButtonStates()
-    }
-
-    // ==================== 权限按钮的红/绿状态 ====================
-
-    /**
-     * 按实际权限状态刷新三个权限按钮：未授权=红可点，已授权=绿不可点
-     * （授权后无"撤销"操作，不可点即表达"已完成"）。风格与「选择插件」一致。
-     */
-    private fun refreshPermButtonStates() {
-        val acGranted = checkSelfPermission("android.permission.BYDAUTO_AC_COMMON") == PackageManager.PERMISSION_GRANTED
-        updatePermButtonState(binding.btnReqAcCommon, binding.tvReqAcCommonLabel, acGranted)
-
-        val settingGranted = checkSelfPermission("android.permission.BYDAUTO_SETTING_COMMON") == PackageManager.PERMISSION_GRANTED
-        updatePermButtonState(binding.btnReqSettingCommon, binding.tvReqSettingCommonLabel, settingGranted)
-
-        val bleGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-                checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
-        } else {
-            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        }
-        updatePermButtonState(binding.btnReqBluetooth, binding.tvReqBluetoothLabel, bleGranted)
-    }
-
-    private fun updatePermButtonState(container: LinearLayout, label: TextView, granted: Boolean) {
-        container.setBackgroundResource(if (granted) R.drawable.bg_btn_green else R.drawable.bg_btn_red)
-        label.setTextColor(Color.parseColor(if (granted) "#2E7D32" else "#C62828"))
-        container.isClickable = !granted
-        container.isFocusable = !granted
-        container.foreground = if (granted) null else selectableItemForeground()
-    }
-
-    /** ⚠️ 每次取一份新的 ?attr/selectableItemBackground drawable——不同 View 不能共用同一实例（内部状态会互相打架） */
-    private fun selectableItemForeground(): Drawable? {
-        val ta = obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground))
-        val drawable = ta.getDrawable(0)
-        ta.recycle()
-        return drawable
-    }
-
-    // ==================== 蓝牙权限申请 ====================
-
-    /**
-     * BLUETOOTH_CONNECT/BLUETOOTH_SCAN 是 API 31+ 的运行时权限，一起申请
-     * （插件自己的 BleManager 找不到已知/已配对设备时会自己扫描+配对，两个
-     * 都要，但只有 Activity 能发起权限申请，插件够不到，得由壳代劳）；
-     * 更早系统连接靠 manifest 里 maxSdkVersion=30 的旧 BLUETOOTH/BLUETOOTH_ADMIN
-     * （安装时自动授予），扫描则要 ACCESS_FINE_LOCATION。由「申请蓝牙权限」按钮触发。
-     * 申请到手之后不用管后续连接——插件的重连轮询会自己接上。
-     */
-    private fun requestBluetoothPermission() {
-        LogSink.section("蓝牙权限申请")
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                LogSink.append("当前系统无需申请 BLUETOOTH_CONNECT（API < 31），定位权限已就绪")
-            } else {
-                LogSink.append("请求 ACCESS_FINE_LOCATION 权限（本系统 BLE 扫描的前提）")
-                requestPermissions(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_BLUETOOTH_PERM)
-            }
-            return
-        }
-        val needed = listOf(
-            android.Manifest.permission.BLUETOOTH_CONNECT,
-            android.Manifest.permission.BLUETOOTH_SCAN
-        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-        if (needed.isEmpty()) {
-            LogSink.append("✅ 蓝牙连接/扫描权限已授权")
-            refreshPermButtonStates()
-        } else {
-            LogSink.append("请求权限：${needed.joinToString()}")
-            requestPermissions(needed.toTypedArray(), REQUEST_BLUETOOTH_PERM)
-        }
-    }
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 }

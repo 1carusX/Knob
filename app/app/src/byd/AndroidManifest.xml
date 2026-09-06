@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- byd flavor（比亚迪车机）专属权限覆盖层：manifest merger 在编译期把它合入
+     main 基座，只有 byd 变体带这些权限；generic 变体不包含此目录，故无任何
+     BYDAUTO 权限（基座 manifest 里也没有，不能靠删除实现，见 main 的说明）。
+     座椅通风在 Setting 设备，空调在 AC 设备。
+     *_GET/*_SET 为 signature 级（车机厂商签名装车即授）；
+     *_COMMON 为 dangerous 级（运行时申请，见 KnobActivity + PlatformConfig）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_AC_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_AC_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_AC_COMMON" />
+
+</manifest>

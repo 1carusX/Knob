@@ -128,103 +128,16 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 权限申请：每个权限单独一个按键，不在启动时自动弹——车机上
-             不知道自动弹权限会不会引发奇怪的系统行为，改成用户手动点。
-             风格跟上面「选择插件」那排一致（圆角色块+图标+文字），颜色
-             随权限状态变化：没授权=红色可点，已授权=绿色不可点（见
+        <!-- 权限申请按钮行：子按钮由 KnobActivity 按 PlatformConfig 动态生成
+             （一行内平分；各平台带哪些权限、图标/文案全由 PlatformConfig 决定，
+             布局里不写死任何平台专属权限）。颜色随权限状态变化（见
              KnobActivity.updatePermButtonState）。 -->
         <LinearLayout
+            android:id="@+id/permContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginTop="6dp">
-
-            <LinearLayout
-                android:id="@+id/btnReqAcCommon"
-                android:layout_width="0dp"
-                android:layout_height="72dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="@drawable/bg_btn_red"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="🌡️"
-                    android:textSize="26sp" />
-
-                <TextView
-                    android:id="@+id/tvReqAcCommonLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="AC_COMMON"
-                    android:textSize="10sp"
-                    android:textColor="#C62828"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/btnReqSettingCommon"
-                android:layout_width="0dp"
-                android:layout_height="72dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="@drawable/bg_btn_red"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="⚙️"
-                    android:textSize="26sp" />
-
-                <TextView
-                    android:id="@+id/tvReqSettingCommonLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="SETTING_COMMON"
-                    android:textSize="10sp"
-                    android:textColor="#C62828"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/btnReqBluetooth"
-                android:layout_width="0dp"
-                android:layout_height="72dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_red"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="📶"
-                    android:textSize="26sp" />
-
-                <TextView
-                    android:id="@+id/tvReqBluetoothLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="蓝牙权限"
-                    android:textSize="10sp"
-                    android:textColor="#C62828"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-        </LinearLayout>
+            android:layout_marginTop="6dp" />
     </LinearLayout>
 
     <!-- ==================== 右列：插件页面容器（未加载时显示占位符） ==================== -->

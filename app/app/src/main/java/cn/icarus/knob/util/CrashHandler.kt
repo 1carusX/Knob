@@ -14,15 +14,14 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 全局崩溃捕获器。
- * 当 App 崩溃（未捕获异常）时，把崩溃堆栈自动保存到 Downloads/crash_{时间}.txt，
- * 方便在没有 adb 的情况下抓取崩溃日志。
+ * 全局崩溃捕获器：未捕获异常时把堆栈自动存到 Downloads/crash_{时间}.txt，
+ * 作为无 adb 环境下抓崩溃日志的兜底（车机无 adb）。
  */
 object CrashHandler {
 
     private var installed = false
 
-    /** 安装全局未捕获异常处理器（应在 Application.onCreate 或 KnobActivity 中调用一次） */
+    /** 安装全局未捕获异常处理器（应在 Application.onCreate 或 KnobActivity 调一次） */
     fun install() {
         if (installed) return
         installed = true
@@ -31,7 +30,7 @@ object CrashHandler {
             try {
                 saveCrash(throwable, thread)
             } catch (ignored: Throwable) {
-                // 保存崩溃日志本身失败时忽略，避免二次崩溃
+                // 存崩溃日志本身失败时忽略，避免二次崩溃
             }
             // 仍交给默认处理器（结束进程并提示）
             default?.uncaughtException(thread, throwable)
@@ -58,6 +57,7 @@ object CrashHandler {
         val fileName = "crash_$timestamp.txt"
         val content = sb.toString()
 
+        // API 29+ 走 MediaStore（无需存储权限）；更早用公共 Downloads 目录
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)

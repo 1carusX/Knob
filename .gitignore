@@ -10,10 +10,7 @@
 # 本机环境（不入库）
 local.properties
 
-# 不入公开仓库的本地资料（文件保留在本地工作区）
-#   plugin/libs/   第三方专有 SDK
-#   docs/evidence/ 实车日志，含车机指纹与已安装应用清单
-#   docs/local/    立项阶段的调研笔记与参考资料
+# 本地资料，不入库
 docs/evidence/
 docs/local/
 

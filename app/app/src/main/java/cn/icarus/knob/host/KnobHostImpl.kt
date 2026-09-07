@@ -5,9 +5,12 @@ import cn.icarus.knob.ble.BleManager
 import cn.icarus.knob.util.LogSink
 
 /**
- * 壳实现 KnobHost：把插件发来的日志转发到 LogSink 显示，
- * 并把插件请求的 pushToKnob（屏显/指令）交给 BLE 通道下发。
- * 传给插件的 init(context, host)。
+ * 壳实现 [KnobHost]（传给插件的反向通道）：
+ * log() 转发到 LogSink 显示；pushToKnob() 把插件要发往 knob 屏显/指令的 Map
+ * 原样交给 BleManager 编码转发。
+ *
+ * ⚠️ 壳完全不理解字段含义：插件传什么 key/值就发什么，字段意义由插件与固件
+ * 两端约定——以后插件加/改显示字段，这一层不用跟着改。
  */
 object KnobHostImpl : KnobHost {
 
@@ -15,12 +18,6 @@ object KnobHostImpl : KnobHost {
         LogSink.append("[插件] $message")
     }
 
-    /**
-     * 插件请求壳发送数据到 knob（屏显/指令）。壳在这里完全不理解字段
-     * 含义——原样把 Map 交给 BleManager 编码转发，插件传什么 key/值就
-     * 发什么，字段的意义由插件和固件两边自己约定。以后插件要加/改显示
-     * 字段，这一层不用跟着改。
-     */
     override fun pushToKnob(data: Map<String, Any>) {
         val text = data.map { "${it.key}=${it.value}" }.joinToString(", ")
         val sent = BleManager.write(data)

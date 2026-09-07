@@ -749,7 +749,7 @@ class MainPlugin : KnobPlugin {
                 carControl?.checkSeatFeatures(appContext!!)
             })
             addView(Ui.space(ctx, 0, 8))
-            // 反射扫描 + 反编译 dotix 都确认了 setSeatHeatingState(seat, state)/
+            // 反射扫描 + 反编译一款同类竞品应用都确认了 setSeatHeatingState(seat, state)/
             // getSeatHeatingState(seat) 这套接口真实存在，state 官方常量是
             // SEAT_HEATING_OFF/LOW/HIGH=1/2/3——这几个按钮就是拿这三个值
             // 实际调一下，看物理座椅有没有反应，确认参数含义对不对。

@@ -149,17 +149,12 @@ class CarControl(private val logger: KnobHost) {
     }
 
     /**
-     * 座椅加热——跟座椅通风一样是隐藏方法（反射列举确认过真机上
-     * getSeatHeatingState(int)/setSeatHeatingState(int,int) 确实存在，
-     * 但编译期的 bydauto-openapi.jar 桩包没声明它们，直接 import 编不过），
-     * 得用反射调。seat 参数不写死主驾，直接传 BYDAutoSettingDevice.
-     * DRIVER_SEAT/PASSENGER_SEAT——反编译 dotix 的座椅加热实现
-     * （BYDAutoSettingDeviceLoad.java/BydSDKGlobal.java）确认了同一套接口
-     * 支持 4 个座位（1=主驾,2=副驾,3=后左,4=后右），state 用官方常量
-     * BYDAutoSettingDevice.SEAT_HEATING_OFF/LOW/HIGH（1/2/3，跟座椅通风
-     * 是同一套取值）。另外还反射到一个 setSeatHeatingState1/
-     * getSeatHeatingState1 的"1"后缀重载，dotix 自己声明了但业务代码里
-     * 从来没调用过，用途不明，这里先不接。
+     * 座椅加热：跟座椅通风一样是隐藏方法（桩包 jar 没声明 get/setSeatHeatingState，
+     * 反射调）。seat 直接传 BYDAutoSettingDevice.DRIVER_SEAT/PASSENGER_SEAT 等——
+     * 反编译一款同类竞品应用确认支持全部 4 座（1=主驾,2=副驾,3=后左,4=后右），
+     * state 用 SEAT_HEATING_OFF/LOW/HIGH（1/2/3，同座椅通风取值）。
+     * ⚠️ 还反射到一个"1"后缀重载（setSeatHeatingState1/getSeatHeatingState1），
+     * 对方声明了但没人调用，用途不明，不接。
      */
     fun setSeatHeating(context: Context, seat: Int, state: Int): Int? {
         if (settingDevice == null && !initSettingDevice(context)) return null

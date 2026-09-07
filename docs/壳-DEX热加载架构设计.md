@@ -11,25 +11,11 @@
 
 ## 架构图
 
-```
-┌────────────────────────────────────────────────┐
-│ 壳 App (cn.icarus.knob, 车机厂商签名一次)          │
-│                                                │
-│ · KnobApp (加载器)                              │
-│    - 启动读取私有目录 filesDir/knob/plugin.dex  │
-│    - DexClassLoader 加载                       │
-│    - 实例化插件入口 → 调 init()                 │
-│ · 内置框架：蓝牙BLE、日志、UI壳、权限            │
-│ · api/：KnobPlugin / KnobHost / Ui（壳↔DEX 契约）│
-└────────────────────────────────────────────────┘
-            ▲ DexClassLoader（继承壳ClassLoader）
-            │
-┌────────────────────────────────────────────────┐
-│ plugin.dex（可反复更新，无需重签）               │
-│ · 实现 KnobPlugin 接口                          │
-│ · 全部车控逻辑（BYDAUTO调用）                   │
-│ · 全部业务逻辑、测试序列、蓝牙协议处理          │
-└────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    SHELL["壳 App（cn.icarus.knob，车机厂商签名一次）<br/>· KnobApp（加载器）：启动时读取私有目录<br/>filesDir/knob/plugin.dex → DexClassLoader 加载<br/>→ 实例化插件入口 → 调 init()<br/>· 内置框架：蓝牙 BLE、日志、UI 壳、权限<br/>· api/：KnobPlugin / KnobHost / Ui（壳↔DEX 契约）"]
+    PLUGIN["plugin.dex（可反复更新，无需重签）<br/>· 实现 KnobPlugin 接口<br/>· 全部车控逻辑（BYDAUTO 调用）<br/>· 全部业务逻辑、测试序列、蓝牙协议处理"]
+    SHELL -- "DexClassLoader（继承壳 ClassLoader）" --> PLUGIN
 ```
 
 ## 职责划分

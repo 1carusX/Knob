@@ -4,10 +4,18 @@
     <!-- 探测用权限：读已安装应用 -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
-    <!-- 蓝牙：BleManager 用来对已配对的 knob 发起 GATT 写入 -->
+    <!-- 蓝牙：权限只能由壳的 manifest 声明，实际使用方是插件自己的
+         BleManager（plugin/.../plugin/BleManager.kt），对已配对的 knob 发起
+         GATT 写入 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- 蓝牙扫描（插件的 BleManager 找不到已知/已配对设备时自动扫描用）：
+         API 31+ 用 BLUETOOTH_SCAN，neverForLocation 表示不用扫描结果推算
+         位置，可以不额外弹定位权限；更早的系统 BLE 扫描本身就要求定位权限 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
 
     <!-- 车机厂商车控 HAL 权限（座椅通风在 Setting 设备，空调在 AC 设备） -->
     <uses-permission android:name="android.permission.BYDAUTO_SETTING_GET" />

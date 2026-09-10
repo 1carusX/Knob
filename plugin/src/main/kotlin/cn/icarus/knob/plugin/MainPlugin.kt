@@ -74,6 +74,7 @@ class MainPlugin : KnobPlugin {
 
     private var carControl: CarControl? = null
     private var selfTest: PluginSelfTest? = null
+    private var bleManager: BleManager? = null
     private var appContext: Context? = null
     private var host: KnobHost? = null
 
@@ -88,6 +89,16 @@ class MainPlugin : KnobPlugin {
     // 靠页面里的按钮跳转，旋钮单击不会经过它。
     private var currentPageId: String = "ac_link"
     private val knobCyclePages = listOf("ac_link", "ac_main", "ac_deputy", "seat")
+
+    // 有没有连上 knob 的 BLE 通道——没连上时不管 currentPageId 是什么，
+    // 都强制显示"home"这个连接页（见 refreshCurrentPage），逼用户先把
+    // 蓝牙连上，不然转旋钮/戳按钮改的东西根本传不到 knob 上，改了也白改。
+    private var bleConnected = false
+
+    // 后台被动扫描发现的候选设备名字，非 null 时首页显示"发现 XXX，点击
+    // 配对"。壳只发现不自动配对（弹配对框太打断），要不要真的配对由用户
+    // 在首页点按钮决定，见 buildHomePage()。
+    private var candidateName: String? = null
 
     private fun isAcStop(pageId: String) = pageId == "ac_link" || pageId == "ac_main" || pageId == "ac_deputy"
 
@@ -105,9 +116,17 @@ class MainPlugin : KnobPlugin {
             it.onLightIntensityChangedExternal = ::handleExternalLightIntensityChange
         }
         selfTest = PluginSelfTest(carControl!!, host)
+        bleManager = BleManager(context, host).also {
+            it.onKeyEvent = ::handleKey
+            it.onConnectionStateChanged = ::handleBleConnectionChanged
+            it.onCandidateFound = ::handleBleCandidateFound
+        }
         host.log("✅ 插件初始化完成（车控引擎已就绪）")
         restoreState()
         syncToKnob()
+        // BLE 连接现在整个归插件自己管（见 BleManager），壳不再插手认哪个
+        // 设备、什么时候连——插件加载完就该自己发起。
+        bleManager?.start()
     }
 
     /**
@@ -148,7 +167,7 @@ class MainPlugin : KnobPlugin {
     private fun handleExternalLightIntensityChange(level: Int) {
         val percent = brightnessForLightLevel(level)
         mainHandler.post {
-            host?.pushToKnob(mapOf("brightness" to percent))
+            bleManager?.write(mapOf("brightness" to percent))
         }
     }
 
@@ -325,27 +344,18 @@ class MainPlugin : KnobPlugin {
     }
 
     /**
-     * 推送域：壳在任意时刻主动推数据给插件。
+     * 推送域：壳在任意时刻主动推数据给插件。BLE 连接状态/扫描候选不再
+     * 走这里——那是插件自己的 BleManager 直接回调（见 init() 里的
+     * handleBleConnectionChanged/handleBleCandidateFound），跟壳无关。
      * type 约定（新增类型只需加一条 when 分支）：
-     *   "bluetooth"  data: {connected: Boolean, name: String?, mac: String?}  蓝牙连接状态
-     *   "state"      data: {model: String, android: String, ...}              壳/设备状态
-     *   "hardware"   data: {event: String, ...}                               硬件事件流（旋钮/按键原始值）
-     *   "config"     data: {key: Any, ...}                                    配置项
+     *   "state"        data: {model: String, android: String, ...}             壳/设备状态
+     *   "hardware"     data: {event: String, ...}                              硬件事件流（旋钮/按键原始值）
+     *   "config"       data: {key: Any, ...}                                   配置项
      */
     override fun onPush(type: String, data: Map<String, Any>) {
         val ctrl = carControl
         try {
             when (type) {
-                "bluetooth" -> {
-                    val connected = data["connected"] as? Boolean ?: false
-                    ctrl?.log("📡 蓝牙状态: ${if (connected) "已连接" else "断开"} " +
-                        "name=${data["name"]} mac=${data["mac"]}")
-                    Log.i(tag, "onPush bluetooth connected=$connected")
-                    // 刚连上（含断线重连）时主动推一次当前状态给屏幕——不然
-                    // 插件 init() 那次同步大概率因为当时 GATT 还没连上而白白
-                    // 失败，用户不主动操作的话屏幕会一直停在出厂默认画面。
-                    if (connected) syncToKnob()
-                }
                 "state" -> {
                     ctrl?.log("ℹ️ 壳状态: ${data.map { "${it.key}=${it.value}" }.joinToString(", ")}")
                     Log.i(tag, "onPush state done")
@@ -391,6 +401,25 @@ class MainPlugin : KnobPlugin {
         }
         Log.i(tag, "onEvent key code=$code action=$action（未处理）")
         return false
+    }
+
+    /**
+     * BleManager.onConnectionStateChanged 回调：断开就切到"扫描并连接
+     * 蓝牙"这个首页；重新连上（含断线重连）就切回原来停靠的页面，并借
+     * refreshCurrentPage() 顺带同步一次当前状态给屏幕——不然用户不主动
+     * 操作的话，屏幕会一直停在出厂默认画面。
+     */
+    private fun handleBleConnectionChanged(connected: Boolean, name: String?, mac: String?) {
+        carControl?.log("📡 蓝牙状态: ${if (connected) "已连接" else "断开"} name=$name mac=$mac")
+        bleConnected = connected
+        refreshCurrentPage()
+    }
+
+    /** BleManager.onCandidateFound 回调：让首页显示出这个候选，等用户点确认配对。 */
+    private fun handleBleCandidateFound(name: String) {
+        carControl?.log("🔍 发现候选设备: $name")
+        candidateName = name
+        refreshCurrentPage()
     }
 
     /**
@@ -469,7 +498,7 @@ class MainPlugin : KnobPlugin {
     }
 
     /**
-     * 把当前停靠点同步给旋钮屏幕（走 host.pushToKnob -> BLE -> ESP32），
+     * 把当前停靠点同步给旋钮屏幕（走 bleManager.write -> BLE -> ESP32），
      * 作为固件本地编辑的起点。这里直接按当前停靠点拼一个 Map，不同停靠点
      * 带的字段不完全一样——不再用一个固定形状的结构体强行统一，以后加/
      * 改某个停靠点的字段只影响它自己这一条分支。"layout" 字段告诉固件
@@ -514,7 +543,7 @@ class MainPlugin : KnobPlugin {
             )
             else -> mapOf("layout" to "none", "title" to "首页", "value" to 0, "min" to 0, "max" to 0)
         }
-        host?.pushToKnob(data)
+        bleManager?.write(data)
     }
 
     // ==================== 状态持久化（进程重启后恢复页面 + 车辆状态） ====================
@@ -587,29 +616,56 @@ class MainPlugin : KnobPlugin {
         refreshCurrentPage()
     }
 
-    /** 用当前状态重绘 currentPageId 对应的页面，并同步给 knob——数值调整（不切页）时用这个。 */
+    /**
+     * 用当前状态重绘该显示的页面，并同步给 knob——数值调整（不切页）时用这个。
+     * 没连上 knob 时无视 currentPageId，强制显示"home"连接页（见 bleConnected），
+     * 也没有 knob 可同步；这是唯一一处把"该显示哪个页面"和"currentPageId"
+     * 分开决定的地方，其余地方（advanceStop/switchToPage）都只管业务意义上
+     * 停靠在哪个停靠点，不用关心蓝牙有没有连上。
+     */
     private fun refreshCurrentPage() {
         val container = pageContainer ?: return
-        val builder = pages[currentPageId] ?: return
+        val pageId = if (bleConnected) currentPageId else "home"
+        val builder = pages[pageId] ?: return
         container.removeAllViews()
         container.addView(builder(), ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        syncToKnob()
+        if (bleConnected) syncToKnob()
     }
 
-    /** 首页：跳转到空调（联动）页 / 座椅页（纯菜单，不接旋钮 Tab 循环） */
+    /**
+     * "首页" = 没连上 knob 时强制显示的连接页（见 refreshCurrentPage 的
+     * bleConnected 判断），不是可以随便导航过来的菜单。BleManager 后台每
+     * 5s 被动扫描一次（不会自动弹配对框，见 BleManager.scanForCandidate），
+     * 扫到候选就回调 handleBleCandidateFound，这里才显示出候选名字和
+     * 「确认配对」按钮——真正的 createBond() 只在用户点了这个按钮之后才
+     * 发生。连上之后 handleBleConnectionChanged 会自动把页面切回原来停靠
+     * 的那个停靠点，不需要这里手动跳转。
+     */
     private fun buildHomePage(): View {
         val ctx = appContext!!
+        val name = candidateName
         return Ui.vStack(ctx).apply {
             gravity = Gravity.CENTER
             setBackgroundColor(Color.parseColor("#FFFFFF"))
-            addView(Ui.title(ctx, "🎛 插件首页"))
-            addView(Ui.hint(ctx, "旋钮单击在联动/主驾/副驾/座椅 4 个停靠点间循环切换\n首页只能触屏进入"))
-            addView(Ui.space(ctx, 0, 12))
-            addView(Ui.btn(ctx, "❄️ 去空调页") { switchToPage("ac_link") })
-            addView(Ui.btn(ctx, "🪑 去座椅页") { switchToPage("seat") })
+            addView(Ui.title(ctx, "🔌 未连接旋钮"))
+            if (name != null) {
+                addView(Ui.hint(ctx, "发现设备：$name"))
+                addView(Ui.space(ctx, 0, 12))
+                addView(Ui.btn(ctx, "🔗 确认配对") {
+                    host?.log("👉 用户确认配对 $name")
+                    // 乐观清空：配对是否成功由后续连接状态变化 / 重新扫描
+                    // 决定，这里先退回"扫描中"文案，避免配对失败后按钮还
+                    // 留在原地、再点一次却已经没有候选可配对。
+                    candidateName = null
+                    bleManager?.pairCandidate()
+                    refreshCurrentPage()
+                })
+            } else {
+                addView(Ui.hint(ctx, "正在扫描附近的蓝牙旋钮…"))
+            }
         }
     }
 
@@ -690,7 +746,6 @@ class MainPlugin : KnobPlugin {
             }
             addView(Ui.space(ctx, 0, 12))
             addView(Ui.btn(ctx, "🔀 下一个") { advanceStop() })
-            addView(Ui.btn(ctx, "← 返回首页") { switchToPage("home") })
         }
     }
 
@@ -768,7 +823,6 @@ class MainPlugin : KnobPlugin {
             })
             addView(Ui.space(ctx, 0, 12))
             addView(Ui.btn(ctx, "🔀 下一个") { advanceStop() })
-            addView(Ui.btn(ctx, "← 返回首页") { switchToPage("home") })
         }
     }
 
@@ -802,5 +856,6 @@ class MainPlugin : KnobPlugin {
     override fun onDestroy() {
         Log.i(tag, "MainPlugin.onDestroy")
         carControl?.unregisterListeners()
+        bleManager?.shutdown()
     }
 }

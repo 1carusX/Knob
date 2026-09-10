@@ -16,7 +16,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import cn.icarus.knob.ble.BleManager
 import cn.icarus.knob.databinding.ActivityKnobBinding
 import cn.icarus.knob.host.KnobHostImpl
 import cn.icarus.knob.plugin.PluginLoader
@@ -78,7 +77,7 @@ class KnobActivity : AppCompatActivity() {
         // 由用户决定，不会有意外弹窗。
         binding.btnReqAcCommon.setOnClickListener { requestSinglePermission("android.permission.BYDAUTO_AC_COMMON", REQUEST_AC_COMMON_PERM) }
         binding.btnReqSettingCommon.setOnClickListener { requestSinglePermission("android.permission.BYDAUTO_SETTING_COMMON", REQUEST_SETTING_COMMON_PERM) }
-        binding.btnReqBluetooth.setOnClickListener { requestBluetoothPermissionAndConnect() }
+        binding.btnReqBluetooth.setOnClickListener { requestBluetoothPermission() }
         refreshPermButtonStates()
 
         // 插件已在 Application.onCreate 同步加载完，这里把页面容器交给它
@@ -101,7 +100,8 @@ class KnobActivity : AppCompatActivity() {
 
     /**
      * 系统投递的按键（车机物理键、系统返回键）转给插件，同样走 onEvent("key")。
-     * 旋钮本身的转/点/长按不经过这里，是 BleManager 收到 BLE 通知后直接调插件的。
+     * 旋钮本身的转/点/长按不经过这里，是插件自己的 BleManager 收到 BLE 通知后
+     * 直接处理的（BleManager 现在归插件所有，见 plugin/BleManager.kt）。
      *
      * ⚠️ 为什么用 dispatchKeyEvent 而非 onKeyDown：它在 View 树分发之前拿到事件，
      * 不会被获得焦点的按钮抢走 DPAD/ENTER。
@@ -136,10 +136,7 @@ class KnobActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 插件刚导入完，把设备信息推给它。蓝牙连接状态不在这里推假数据——真实的
-     * 连接状态由 BleManager 在 GATT 连上/断开时直接推给插件。
-     */
+    /** 插件刚导入完，把设备信息推给它。蓝牙连接状态不在这里推——插件自己的 BleManager 全权管理。 */
     private fun pushShellData() {
         val p = PluginLoader.current ?: return
         p.onPush("state", mapOf(
@@ -267,8 +264,11 @@ class KnobActivity : AppCompatActivity() {
                 LogSink.append(if (granted) "✅ BYDAUTO_SETTING_COMMON 已授权" else "❌ BYDAUTO_SETTING_COMMON 未授权")
             }
             REQUEST_BLUETOOTH_PERM -> {
-                LogSink.append(if (granted) "✅ BLUETOOTH_CONNECT 已授权" else "❌ BLUETOOTH_CONNECT 未授权，BLE 写入功能不可用")
-                if (granted) BleManager.init(applicationContext)
+                // API 31+ 这里一次申请 CONNECT+SCAN 两个权限，逐个检查而不是只看 grantResults[0]
+                val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                LogSink.append(if (allGranted) "✅ 蓝牙连接/扫描权限已授权" else "❌ 蓝牙权限未完全授权，自动连接/配对可能不可用")
+                // 不在这里主动触发连接——插件自己的 BleManager 有 5s 重连轮询，
+                // 权限刚授权的话最多等一个轮询周期就会自己接上，不需要壳插手。
             }
         }
         refreshPermButtonStates()
@@ -287,8 +287,12 @@ class KnobActivity : AppCompatActivity() {
         val settingGranted = checkSelfPermission("android.permission.BYDAUTO_SETTING_COMMON") == PackageManager.PERMISSION_GRANTED
         updatePermButtonState(binding.btnReqSettingCommon, binding.tvReqSettingCommonLabel, settingGranted)
 
-        val bleGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-            checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        val bleGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        } else {
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
         updatePermButtonState(binding.btnReqBluetooth, binding.tvReqBluetoothLabel, bleGranted)
     }
 
@@ -308,29 +312,37 @@ class KnobActivity : AppCompatActivity() {
         return drawable
     }
 
-    // ==================== 蓝牙权限 + GATT 连接 ====================
+    // ==================== 蓝牙权限申请 ====================
 
     /**
-     * BLUETOOTH_CONNECT 是 API 31+ 的运行时权限；更早系统靠 manifest 里
-     * maxSdkVersion=30 的旧 BLUETOOTH/BLUETOOTH_ADMIN（安装时自动授予）覆盖。
-     * 由「申请蓝牙权限」按钮触发。
+     * BLUETOOTH_CONNECT/BLUETOOTH_SCAN 是 API 31+ 的运行时权限，一起申请
+     * （插件自己的 BleManager 找不到已知/已配对设备时会自己扫描+配对，两个
+     * 都要，但只有 Activity 能发起权限申请，插件够不到，得由壳代劳）；
+     * 更早系统连接靠 manifest 里 maxSdkVersion=30 的旧 BLUETOOTH/BLUETOOTH_ADMIN
+     * （安装时自动授予），扫描则要 ACCESS_FINE_LOCATION。由「申请蓝牙权限」按钮触发。
+     * 申请到手之后不用管后续连接——插件的重连轮询会自己接上。
      */
-    private fun requestBluetoothPermissionAndConnect() {
-        LogSink.section("蓝牙权限 / GATT 连接")
+    private fun requestBluetoothPermission() {
+        LogSink.section("蓝牙权限申请")
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            LogSink.append("当前系统无需运行时申请蓝牙权限（API < 31）")
-            BleManager.init(applicationContext)
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                LogSink.append("当前系统无需申请 BLUETOOTH_CONNECT（API < 31），定位权限已就绪")
+            } else {
+                LogSink.append("请求 ACCESS_FINE_LOCATION 权限（本系统 BLE 扫描的前提）")
+                requestPermissions(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_BLUETOOTH_PERM)
+            }
             return
         }
-        val granted = checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) ==
-            PackageManager.PERMISSION_GRANTED
-        if (granted) {
-            LogSink.append("✅ BLUETOOTH_CONNECT 已授权")
-            BleManager.init(applicationContext)
+        val needed = listOf(
+            android.Manifest.permission.BLUETOOTH_CONNECT,
+            android.Manifest.permission.BLUETOOTH_SCAN
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (needed.isEmpty()) {
+            LogSink.append("✅ 蓝牙连接/扫描权限已授权")
             refreshPermButtonStates()
         } else {
-            LogSink.append("请求 BLUETOOTH_CONNECT 权限")
-            requestPermissions(arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT), REQUEST_BLUETOOTH_PERM)
+            LogSink.append("请求权限：${needed.joinToString()}")
+            requestPermissions(needed.toTypedArray(), REQUEST_BLUETOOTH_PERM)
         }
     }
 }

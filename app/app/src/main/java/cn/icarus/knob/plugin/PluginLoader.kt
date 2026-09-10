@@ -93,6 +93,10 @@ object PluginLoader {
             )
             val pluginClass = classLoader.loadClass("cn.icarus.knob.plugin.MainPlugin")
             val plugin = pluginClass.getDeclaredConstructor().newInstance() as KnobPlugin
+            // 换成新实例前先清理旧的——插件自己持有 BLE 连接/监听器等资源
+            // （见 BleManager），不销毁的话会挂着引用旧 classLoader 的类，
+            // 是内存泄漏；重新导入插件本来就会断开蓝牙连接，这是预期代价。
+            current?.onDestroy()
             current = plugin
             Log.i(TAG, "✅ 插件加载成功: $dexFile")
             plugin

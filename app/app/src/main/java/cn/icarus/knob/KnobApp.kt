@@ -2,13 +2,12 @@ package cn.icarus.knob
 
 import android.app.Application
 import android.content.Context
-import cn.icarus.knob.ble.BleManager
 import cn.icarus.knob.host.KnobHostImpl
 import cn.icarus.knob.plugin.PluginLoader
 import cn.icarus.knob.util.LogSink
 
 /**
- * Application：进程启动时同步加载插件 + 启动 BLE 重连轮询。
+ * Application：进程启动时同步加载插件。
  *
  * ⚠️ 同步而非延迟：Application.onCreate 必然早于本进程任何 Activity.onCreate，
  * 同步加载才能保证 KnobActivity 创建时插件已就绪、ui.bind 能命中（dex 只有
@@ -18,14 +17,15 @@ import cn.icarus.knob.util.LogSink
  * （改自定义 BLE GATT 通道，见 BleManager）进程就没了自动拉起手段——现在靠
  * BootReceiver 接开机广播把进程拉起来，车机重启后如广播没发则需要手动点开
  * 一次 App 才会运行。
+ *
+ * 壳不再在这里自动启动 BLE 重连轮询——要不要连、什么时候连，是插件的
+ * 决定（没有插件也就没有业务逻辑消费这条 BLE 通道），改成插件 `init()`
+ * 里自己构造 BleManager 并调 `start()` 发起，见 plugin/BleManager.kt。
  */
 class KnobApp : Application() {
     override fun onCreate() {
         super.onCreate()
         context = applicationContext
-        // 常驻后台时 knob 断电重启也能自动把 GATT 通道接回去，不用等
-        // Activity 回到前台，见 BleManager.startReconnectPolling
-        BleManager.startReconnectPolling(this)
         try {
             val plugin = PluginLoader.load(this)
             plugin?.let {

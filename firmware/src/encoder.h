@@ -15,8 +15,11 @@ int16_t encoder_get_diff();
 // 下面两个取事件的函数只有靠它才能被正确更新。
 void encoder_poll_button();
 
-// 每发生一次"短按"（按下又很快松开）就返回一次 true。
-// 取到之后标志位会被清掉，所以每次点击只会被上报一次。
+// 每发生一次"短按"（按住时长小于 ENC_COMMIT_PROGRESS_START_MS 就松手）
+// 就返回一次 true。取到之后标志位会被清掉，所以每次点击只会被上报一次。
+// ⚠️ 按住时长落在 [ENC_COMMIT_PROGRESS_START_MS, ENC_LONG_PRESS_MS) 之间
+// 松手（已经进入长按的视觉反馈区间但没坚持到底）不算短按，两个 take
+// 函数都不会返回 true，安静放弃这次操作——不会退回成一次点击。
 bool encoder_take_click();
 
 // 和 encoder_take_click() 类似，但对应按住超过

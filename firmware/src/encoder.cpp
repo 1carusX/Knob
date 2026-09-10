@@ -94,7 +94,18 @@ int16_t encoder_get_diff() {
 //
 // 机械开关按下/松开的瞬间会有几毫秒的"抖动"，如果直接读电平会
 // 产生很多多余的跳变。这里的做法很简单：20ms 之内的状态变化一律
-// 忽略（消抖），再靠 millis() 时间戳区分"短按"和"长按"。
+// 忽略（消抖），再靠 millis() 时间戳区分"短按"/"长按"/"放弃"三种结局。
+//
+// 按住时长落在哪个区间决定松手时的结局（ENC_COMMIT_PROGRESS_START_MS/
+// ENC_LONG_PRESS_MS 见 config.h，跟屏幕上长按进度环的时间点是同一组
+// 常量，视觉反馈和这里的判定天然对齐）：
+//   [0, START)      纯粹的短按，松手 -> 单击事件
+//   [START, LONG)   已经进入"准备长按"的视觉区间（进度环已经在画）但
+//                   没坚持到底，松手 -> 什么事件都不发，安静放弃这次
+//                   操作。不能退回成单击：用户看到进度环在走、以为自己
+//                   在做"长按确认"，松手才发现被当成单击切走了停靠点，
+//                   会觉得莫名其妙。
+//   [LONG, ∞)       长按已经生效（多半在按住期间就提前判定过了）
 
 static bool s_btn_pressed = false;     // 消抖之后的当前按键状态
 static uint32_t s_press_start_ms = 0;  // 这次按下是什么时候开始的
@@ -114,9 +125,21 @@ void encoder_poll_button() {
             s_press_start_ms = now;
             s_long_fired = false;
         } else if (!s_long_fired) {
-            // 在触发长按之前就松开了，而且这次按下还没报过长按
-            // —— 那就算一次短按。
-            s_click_flag = true;
+            // 松手时兜底用真实按住时长再判一次：正常情况下长按会在下面
+            // "还按着"那段轮询里提前标记掉，走不到这里；但如果按住期间
+            // loop() 被别的耗时操作（LVGL 重绘、BLE 写入）卡住，没能轮询到
+            // 那次判定，松手时 s_long_fired 仍是 false——不能只看这个标志
+            // 位，得用松手时刻算出的真实时长再兜底判一次，否则一次卡顿
+            // 就会把真实的长按误判成短按。
+            uint32_t held_ms = now - s_press_start_ms;
+            if (held_ms >= ENC_LONG_PRESS_MS) {
+                s_long_flag = true;
+            } else if (held_ms < ENC_COMMIT_PROGRESS_START_MS) {
+                s_click_flag = true;
+            }
+            // else：held_ms 落在 [START, LONG) 之间——已经进入长按视觉
+            // 反馈区间又中途松手，两个标志位都不置，安静放弃（见上面
+            // 类注释）。
         }
     }
 

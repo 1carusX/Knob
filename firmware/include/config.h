@@ -31,6 +31,7 @@
 
 #define ENC_LONG_PRESS_MS 1500            // 按住多久算"长按"（触发真正的提交）
 #define ENC_COMMIT_PROGRESS_START_MS 500  // 按住多久开始显示提交进度环（不是一按下就显示，避免单击也扫出一小段）
+#define ENC_DOUBLE_CLICK_WINDOW_MS 300    // 双击判定窗口：两次单击松手间隔在这个时间内才算双击（无条件生效，单击也会因此多出最多这个时间的上报延迟）
 
 // --- 开发板自带的 BOOT 键 ---
 // 接的是 GPIO0，同时也是"要不要进下载模式"的启动选脚——只有在

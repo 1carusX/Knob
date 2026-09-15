@@ -114,6 +114,12 @@ static bool s_long_fired = false;      // 这次按下是否已经触发过长�
 static bool s_click_flag = false;      // "发生了一次短按"的一次性标志位
 static bool s_long_flag = false;       // "发生了一次长按"的一次性标志位
 
+// 双击判定：无条件开启，见 encoder.h 的 encoder_take_double_click() 注释。
+static bool s_double_click_flag = false;   // "发生了一次双击"的一次性标志位
+static bool s_click_pending = false;       // 等双击窗口过去再决定是不是补报单击
+static uint32_t s_click_pending_since_ms = 0;
+static uint32_t s_last_click_release_ms = 0; // 上一次"确认是单击"松手的时刻，0 表示还没有过
+
 void encoder_poll_button() {
     bool pressed = (digitalRead(ENC_PIN_SW) == LOW); // 接线是按下时低电平（上拉）
     uint32_t now = millis();
@@ -135,7 +141,19 @@ void encoder_poll_button() {
             if (held_ms >= ENC_LONG_PRESS_MS) {
                 s_long_flag = true;
             } else if (held_ms < ENC_COMMIT_PROGRESS_START_MS) {
-                s_click_flag = true;
+                if (s_last_click_release_ms != 0 &&
+                    (now - s_last_click_release_ms) <= ENC_DOUBLE_CLICK_WINDOW_MS) {
+                    // 这是双击的第二下：撤销还在等窗口的那次单击（如果有），
+                    // 只报双击，不会先补一次单击再报双击。
+                    s_click_pending = false;
+                    s_double_click_flag = true;
+                    s_last_click_release_ms = 0; // 避免连续三击被当成两次双击
+                } else {
+                    // 先攒着，等双击窗口过去、确认没有第二下，再补报单击。
+                    s_click_pending = true;
+                    s_click_pending_since_ms = now;
+                    s_last_click_release_ms = now;
+                }
             }
             // else：held_ms 落在 [START, LONG) 之间——已经进入长按视觉
             // 反馈区间又中途松手，两个标志位都不置，安静放弃（见上面
@@ -147,6 +165,12 @@ void encoder_poll_button() {
     if (s_btn_pressed && !s_long_fired && (now - s_press_start_ms) >= ENC_LONG_PRESS_MS) {
         s_long_fired = true;
         s_long_flag = true;
+    }
+
+    // 攒着的单击等够了双击窗口、还没等到第二下——确认真的只是单击，补报。
+    if (s_click_pending && (now - s_click_pending_since_ms) > ENC_DOUBLE_CLICK_WINDOW_MS) {
+        s_click_pending = false;
+        s_click_flag = true;
     }
 }
 
@@ -161,6 +185,14 @@ bool encoder_take_click() {
 bool encoder_take_long_press() {
     if (s_long_flag) {
         s_long_flag = false;
+        return true;
+    }
+    return false;
+}
+
+bool encoder_take_double_click() {
+    if (s_double_click_flag) {
+        s_double_click_flag = false;
         return true;
     }
     return false;

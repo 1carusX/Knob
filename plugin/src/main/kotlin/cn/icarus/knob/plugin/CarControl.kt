@@ -23,6 +23,22 @@ import java.lang.reflect.Method
  */
 class CarControl(private val logger: KnobHost) {
 
+    companion object {
+        // 官方 jar（BYDAutoSettingDevice）只定义了 DRIVER_SEAT/PASSENGER_SEAT
+        // 两个座位常量，没有后排的——反编译一款同类竞品 App 确认了完整
+        // 编号：1=主驾,2=副驾,3=后左,4=后右，这里补两个命名常量，调用方
+        // 不用写裸数字。
+        const val REAR_LEFT_SEAT = 3
+        const val REAR_RIGHT_SEAT = 4
+
+        // 后排座椅加热/通风的 hasFeature 探测字符串，同样来自反编译——公开
+        // 常量只有主驾/副驾 4 个（FEATURE_DRIVER_SEAT_HEATING 等），没有后排的。
+        const val FEATURE_REAR_LEFT_SEAT_HEATING = "RearLeftSeatHeating"
+        const val FEATURE_REAR_LEFT_SEAT_VENTILATING = "RearLeftSeatVentilating"
+        const val FEATURE_REAR_RIGHT_SEAT_HEATING = "RearRightSeatHeating"
+        const val FEATURE_REAR_RIGHT_SEAT_VENTILATING = "RearRightSeatVentilating"
+    }
+
     private var settingDevice: BYDAutoSettingDevice? = null
     private var acDevice: BYDAutoAcDevice? = null
     private var sensorDevice: BYDAutoSensorDevice? = null
@@ -121,12 +137,13 @@ class CarControl(private val logger: KnobHost) {
         }
     }
 
-    fun setDriverSeatVentilating(context: Context, state: Int): Int? {
+    /** 座椅通风，seat 传 BYDAutoSettingDevice.DRIVER_SEAT/PASSENGER_SEAT/CarControl.REAR_LEFT_SEAT/REAR_RIGHT_SEAT。 */
+    fun setSeatVentilating(context: Context, seat: Int, state: Int): Int? {
         if (settingDevice == null && !initSettingDevice(context)) return null
         return try {
             val method = findMethod(settingDevice!!, "setSeatVentilatingState", Int::class.java, Int::class.java)
-            val result = method.invoke(settingDevice, BYDAutoSettingDevice.DRIVER_SEAT, state) as? Int
-            log("▶ 主驾座椅通风 → 档位=$state，返回码=$result (0=成功)")
+            val result = method.invoke(settingDevice, seat, state) as? Int
+            log("▶ 座椅(seat=$seat)通风 → 档位=$state，返回码=$result (0=成功)")
             result
         } catch (e: Throwable) {
             log("❌ setSeatVentilatingState 调用失败:\n${exceptionDetail(e)}")
@@ -134,12 +151,12 @@ class CarControl(private val logger: KnobHost) {
         }
     }
 
-    fun getDriverSeatVentilating(context: Context): Int? {
+    fun getSeatVentilating(context: Context, seat: Int): Int? {
         if (settingDevice == null && !initSettingDevice(context)) return null
         return try {
             val method = findMethod(settingDevice!!, "getSeatVentilatingState", Int::class.java)
-            val result = method.invoke(settingDevice, BYDAutoSettingDevice.DRIVER_SEAT) as? Int
-            log("◀ 主驾座椅通风状态 (1=关,2=低,3=高)")
+            val result = method.invoke(settingDevice, seat) as? Int
+            log("◀ 座椅(seat=$seat)通风状态 (1=关,2=低,3=高)")
             logIntValue("result", result)
             result
         } catch (e: Throwable) {
@@ -147,6 +164,13 @@ class CarControl(private val logger: KnobHost) {
             null
         }
     }
+
+    /** 主驾座椅通风的便捷包装——onCommand/onQuery 里 "seat.ventilating" 这条老接口在用，保留不动。 */
+    fun setDriverSeatVentilating(context: Context, state: Int): Int? =
+        setSeatVentilating(context, BYDAutoSettingDevice.DRIVER_SEAT, state)
+
+    fun getDriverSeatVentilating(context: Context): Int? =
+        getSeatVentilating(context, BYDAutoSettingDevice.DRIVER_SEAT)
 
     /**
      * 座椅加热：跟座椅通风一样是隐藏方法（桩包 jar 没声明 get/setSeatHeatingState，
@@ -216,6 +240,10 @@ class CarControl(private val logger: KnobHost) {
             "主驾通风" to BYDAutoSettingDevice.FEATURE_DRIVER_SEAT_VENTILATING,
             "副驾加热" to BYDAutoSettingDevice.FEATURE_PASSENGER_SEAT_HEATING,
             "副驾通风" to BYDAutoSettingDevice.FEATURE_PASSENGER_SEAT_VENTILATING,
+            "后左加热" to FEATURE_REAR_LEFT_SEAT_HEATING,
+            "后左通风" to FEATURE_REAR_LEFT_SEAT_VENTILATING,
+            "后右加热" to FEATURE_REAR_RIGHT_SEAT_HEATING,
+            "后右通风" to FEATURE_REAR_RIGHT_SEAT_VENTILATING,
         )
         features.forEach { (label, feature) ->
             try {

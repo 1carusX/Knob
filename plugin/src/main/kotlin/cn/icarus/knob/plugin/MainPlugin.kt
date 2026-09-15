@@ -39,16 +39,26 @@ class MainPlugin : KnobPlugin {
         private const val KEY_PAGE = "page"
         private const val KEY_AC_MAIN = "ac_main"
         private const val KEY_AC_DEPUTY = "ac_deputy"
-        private const val KEY_SEAT_LEVEL = "seat_level"
+        private const val KEY_SEAT_LEVEL_DRIVER = "seat_level_driver"
+        private const val KEY_SEAT_LEVEL_PASSENGER = "seat_level_passenger"
+        private const val KEY_SEAT_LEVEL_REAR_LEFT = "seat_level_rear_left"
+        private const val KEY_SEAT_LEVEL_REAR_RIGHT = "seat_level_rear_right"
+        private const val KEY_CURRENT_SEAT_INDEX = "current_seat_index"
+        private const val KEY_AC_SPLIT_SHOWING_MAIN = "ac_split_showing_main"
 
         // 座椅 5 档：-2/-1=通风2/1档，0=关闭，1/2=加热1/2档。负数=通风、
         // 正数=加热，这样触屏 ±/knob 屏幕的"居中对称"圆弧
         // （见 firmware/src/main.cpp 的 LV_ARC_MODE_SYMMETRICAL）都能直接
-        // 用这一个有符号数表示，不用另外维护"档位+方向"两个字段。
-        // CarControl 里还没有座椅加热的真实 HAL 接口，这几个档位目前只在
-        // 插件本地模拟，没有对应的真实车控常量可以复用。
+        // 用这一个有符号数表示，不用另外维护"档位+方向"两个字段——反编译
+        // 一款同类竞品 App 确认了它家协议也是同样的"符号选属性、数值选
+        // 档位"思路，只是 0 单独作为两个属性共用的"关闭"，不占用它家的
+        // ±1（它家 OFF 是 ±1，这里统一成 0）。
         private const val SEAT_LEVEL_MIN = -2
         private const val SEAT_LEVEL_MAX = 2
+
+        // 旋钮固件双击专用键码，不对应真实 Android 按键，跟
+        // firmware/src/ble.h 的 KEYCODE_CYCLE_SUB 数值对齐。
+        private const val KEYCODE_CYCLE_SUB = 67
     }
 
     /**
@@ -60,15 +70,70 @@ class MainPlugin : KnobPlugin {
      * 分控开关不再单独缓存——它不是一个可以随便读/信的状态（没有监听
      * 接口，getAcTemperatureControlMode 也可能因为语音/按键早就跟这里
      * 缓存的不一样），改成完全由"当前停靠在哪个停靠点"决定：停靠在
-     * ac_link 就代表要联动、ac_main/ac_deputy 就代表要分控，提交时无条件
+     * ac_link 就代表要联动、ac_split 就代表要分控，提交时无条件
      * 断言一次，见 commitAc()。acMainTemp 兼作联动模式下显示/编辑的温度
      * （分控关闭时主驾副驾理论上是同一个值）。
      */
     private data class VehicleState(
         var acMainTemp: Int = 22,
         var acDeputyTemp: Int = 22,
-        var seatLevel: Int = 0,
+        var seatLevelDriver: Int = 0,
+        var seatLevelPassenger: Int = 0,
+        var seatLevelRearLeft: Int = 0,
+        var seatLevelRearRight: Int = 0,
     )
+
+    /**
+     * "座椅"这一个停靠点内部要在 4 个座位间切换（旋钮双击/触屏按钮，见
+     * [cycleSeat]），转动/长按永远只作用于 [currentSeatIndex] 指向的这一个——
+     * 不用再把"主驾座椅""副驾座椅"…拆成 4 个独立停靠点。座位编号见
+     * CarControl 类注释：1=主驾/2=副驾/3=后左/4=后右。
+     */
+    private data class SeatSlot(val id: Int, val label: String)
+    private val seatSlots = listOf(
+        SeatSlot(BYDAutoSettingDevice.DRIVER_SEAT, "主驾"),
+        SeatSlot(BYDAutoSettingDevice.PASSENGER_SEAT, "副驾"),
+        SeatSlot(CarControl.REAR_LEFT_SEAT, "左后"),
+        SeatSlot(CarControl.REAR_RIGHT_SEAT, "右后"),
+    )
+    private var currentSeatIndex = 0
+
+    private fun seatLevelFor(seatId: Int): Int = when (seatId) {
+        BYDAutoSettingDevice.DRIVER_SEAT -> vehicleState.seatLevelDriver
+        BYDAutoSettingDevice.PASSENGER_SEAT -> vehicleState.seatLevelPassenger
+        CarControl.REAR_LEFT_SEAT -> vehicleState.seatLevelRearLeft
+        CarControl.REAR_RIGHT_SEAT -> vehicleState.seatLevelRearRight
+        else -> 0
+    }
+
+    private fun setSeatLevelFor(seatId: Int, level: Int) {
+        when (seatId) {
+            BYDAutoSettingDevice.DRIVER_SEAT -> vehicleState.seatLevelDriver = level
+            BYDAutoSettingDevice.PASSENGER_SEAT -> vehicleState.seatLevelPassenger = level
+            CarControl.REAR_LEFT_SEAT -> vehicleState.seatLevelRearLeft = level
+            CarControl.REAR_RIGHT_SEAT -> vehicleState.seatLevelRearRight = level
+        }
+    }
+
+    /** 切到下一个座位（主驾→副驾→左后→右后循环），旋钮双击和触屏按钮共用同一个入口。 */
+    private fun cycleSeat() {
+        currentSeatIndex = (currentSeatIndex + 1) % seatSlots.size
+        host?.log("🪑 切换座位 -> ${seatSlots[currentSeatIndex].label}")
+        persistState()
+        refreshCurrentPage()
+    }
+
+    // 空调分控（ac_split）也是一个复合停靠点：主驾/副驾共用同一个停靠点，
+    // 双击/触屏按钮在两者间切换（跟座椅同一个思路），不需要各自占一个
+    // 停靠点。true=当前在编辑主驾，false=副驾。
+    private var acSplitShowingMain = true
+
+    private fun cycleAcSplitSide() {
+        acSplitShowingMain = !acSplitShowingMain
+        host?.log("❄️ 分控切换 -> ${if (acSplitShowingMain) "主驾" else "副驾"}")
+        persistState()
+        refreshCurrentPage()
+    }
 
     private val tag = "KnobPlugin"
 
@@ -88,7 +153,7 @@ class MainPlugin : KnobPlugin {
     // 内——旋钮场景下没有"回菜单"的需求，首页只是触屏进入时的一个入口，
     // 靠页面里的按钮跳转，旋钮单击不会经过它。
     private var currentPageId: String = "ac_link"
-    private val knobCyclePages = listOf("ac_link", "ac_main", "ac_deputy", "seat")
+    private val knobCyclePages = listOf("ac_link", "ac_split", "seat")
 
     // 有没有连上 knob 的 BLE 通道——没连上时不管 currentPageId 是什么，
     // 都强制显示"home"这个连接页（见 refreshCurrentPage），逼用户先把
@@ -100,7 +165,7 @@ class MainPlugin : KnobPlugin {
     // 在首页点按钮决定，见 buildHomePage()。
     private var candidateName: String? = null
 
-    private fun isAcStop(pageId: String) = pageId == "ac_link" || pageId == "ac_main" || pageId == "ac_deputy"
+    private fun isAcStop(pageId: String) = pageId == "ac_link" || pageId == "ac_split"
 
     // AC/Sensor 监听器的回调不在主线程上（AIDL 回调线程），这两个处理
     // 函数里要碰 View（refreshCurrentPage）和触发 knob 同步，必须先切回
@@ -380,10 +445,13 @@ class MainPlugin : KnobPlugin {
     /**
      * 按键处理，返回是否消费。
      *
-     * 旋钮映射：Tab=切下一个停靠点（ac_link/ac_main/ac_deputy/seat 循环），
+     * 旋钮映射：Tab=切下一个停靠点（ac_link/ac_split/seat 循环），
      * Enter=确认（对应触屏页面上的 OK）。旋钮转动本身完全在固件本地处理、
      * 不再上报给手机——长按 Enter 时才把旋钮本地编辑到的最终值（value）
      * 一起带过来，直接拿去应用，不需要手机在转动过程中跟着增量调整。
+     * 双击（CycleSub）用来在"复合停靠点"内部切子项——固件无条件识别双击，
+     * 不知道当前是不是复合停靠点，这里按 currentPageId 决定要不要响应，
+     * 没有子项可切的停靠点收到这个键码直接忽略。
      * 系统返回键不再有特殊处理——停靠点之间是平级切换，没有"返回上一个"
      * 这个概念，交给壳/系统默认处理。按下和抬起都要消费，只吃一半会让
      * 系统按键状态错乱。
@@ -396,6 +464,16 @@ class MainPlugin : KnobPlugin {
             }
             KeyEvent.KEYCODE_ENTER -> {
                 if (action == KeyEvent.ACTION_UP) applyPrimaryValue(value)
+                return true
+            }
+            KEYCODE_CYCLE_SUB -> {
+                if (action == KeyEvent.ACTION_UP) {
+                    when (currentPageId) {
+                        "seat" -> cycleSeat()
+                        "ac_split" -> cycleAcSplitSide()
+                        // 没有子项可切的停靠点——安静忽略，不是错误。
+                    }
+                }
                 return true
             }
         }
@@ -451,28 +529,29 @@ class MainPlugin : KnobPlugin {
                 commitAc(separate = false, area = BYDAutoAcDevice.AC_TEMPERATURE_MAIN_DEPUTY, value = vehicleState.acMainTemp)
                 refreshCurrentPage()
             }
-            "ac_main" -> {
-                if (knobValue != null) {
-                    vehicleState.acMainTemp = knobValue.coerceIn(BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN, BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX)
+            "ac_split" -> {
+                if (acSplitShowingMain) {
+                    if (knobValue != null) {
+                        vehicleState.acMainTemp = knobValue.coerceIn(BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN, BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX)
+                    }
+                    persistState()
+                    commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_MAIN, value = vehicleState.acMainTemp)
+                } else {
+                    if (knobValue != null) {
+                        vehicleState.acDeputyTemp = knobValue.coerceIn(BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN, BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX)
+                    }
+                    persistState()
+                    commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_DEPUTY, value = vehicleState.acDeputyTemp)
                 }
-                persistState()
-                commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_MAIN, value = vehicleState.acMainTemp)
-                refreshCurrentPage()
-            }
-            "ac_deputy" -> {
-                if (knobValue != null) {
-                    vehicleState.acDeputyTemp = knobValue.coerceIn(BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN, BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX)
-                }
-                persistState()
-                commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_DEPUTY, value = vehicleState.acDeputyTemp)
                 refreshCurrentPage()
             }
             "seat" -> {
+                val seatId = seatSlots[currentSeatIndex].id
                 if (knobValue != null) {
-                    vehicleState.seatLevel = knobValue.coerceIn(SEAT_LEVEL_MIN, SEAT_LEVEL_MAX)
+                    setSeatLevelFor(seatId, knobValue.coerceIn(SEAT_LEVEL_MIN, SEAT_LEVEL_MAX))
                 }
                 persistState()
-                commitSeatLevel(vehicleState.seatLevel)
+                commitSeatLevel(seatId, seatLevelFor(seatId))
                 refreshCurrentPage()
             }
             else -> Unit
@@ -488,13 +567,34 @@ class MainPlugin : KnobPlugin {
         else -> "加热2档"
     }
 
-    /** 座椅 OK 键：真正下发座椅通风/加热。CarControl 还没有真实的座椅加热接口，先只做模拟。 */
-    private fun commitSeatLevel(level: Int) {
+    /**
+     * 座椅 OK 键：真正下发座椅通风/加热。level 的符号选属性、数值选档位
+     * （见 SEAT_LEVEL_MIN/MAX 的注释）：>0 调 setSeatHeating，<0 调
+     * setSeatVentilating，=0 两个属性的 OFF 都发一遍——0 本身没有记录
+     * "关闭前是加热还是通风"，两个都发一遍能保证不管之前是哪个都被关掉，
+     * 已经是 OFF 的那个再发一次 OFF 没有副作用。
+     */
+    private fun commitSeatLevel(seatId: Int, level: Int) {
         if (SIMULATE_CAR_CONTROL) {
-            host?.log("🧪（模拟）座椅 -> ${seatLevelLabel(level)}")
+            host?.log("🧪（模拟）座椅(seat=$seatId) -> ${seatLevelLabel(level)}")
             return
         }
-        host?.log("⚠️ 座椅真实车控接口还没实现（CarControl 缺座椅加热的 HAL 封装），只做了本地模拟：${seatLevelLabel(level)}")
+        val ctrl = carControl ?: return
+        val context = appContext ?: return
+        when {
+            level > 0 -> {
+                val state = if (level >= 2) BYDAutoSettingDevice.SEAT_HEATING_HIGH else BYDAutoSettingDevice.SEAT_HEATING_LOW
+                ctrl.setSeatHeating(context, seatId, state)
+            }
+            level < 0 -> {
+                val state = if (level <= -2) BYDAutoSettingDevice.SEAT_VENTILATING_HIGH else BYDAutoSettingDevice.SEAT_VENTILATING_LOW
+                ctrl.setSeatVentilating(context, seatId, state)
+            }
+            else -> {
+                ctrl.setSeatHeating(context, seatId, BYDAutoSettingDevice.SEAT_HEATING_OFF)
+                ctrl.setSeatVentilating(context, seatId, BYDAutoSettingDevice.SEAT_VENTILATING_OFF)
+            }
+        }
     }
 
     /**
@@ -507,7 +607,9 @@ class MainPlugin : KnobPlugin {
      * value/value2。此后转动旋钮只改固件本地的副本，不会再触发这个同步，
      * 直到长按确认把最终值带回来、或者切停靠点/重新进页面时再推一次新的
      * 起点。min<0（座椅）时固件会画成从中间向两侧扩展的圆弧，见
-     * firmware/src/main.cpp。
+     * firmware/src/main.cpp。"sub_count"/"sub_index" 只有复合停靠点
+     * （座椅/空调分控）才带——固件靠这两个字段在屏幕底部画"第 m/n 个"
+     * 指示点，不是复合停靠点不发这两个字段，固件默认当 0 处理（不画）。
      */
     private fun syncToKnob() {
         val data: Map<String, Any> = when (currentPageId) {
@@ -518,29 +620,32 @@ class MainPlugin : KnobPlugin {
                 "min" to BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN,
                 "max" to BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX,
             )
-            "ac_main" -> mapOf(
-                "layout" to "ac_split_main",
-                "title" to "主驾",
+            "ac_split" -> mapOf(
+                "layout" to if (acSplitShowingMain) "ac_split_main" else "ac_split_deputy",
+                "title" to if (acSplitShowingMain) "主驾" else "副驾",
                 "value_main" to vehicleState.acMainTemp,
                 "value_deputy" to vehicleState.acDeputyTemp,
                 "min" to BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN,
                 "max" to BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX,
+                "sub_count" to 2,
+                "sub_index" to if (acSplitShowingMain) 0 else 1,
             )
-            "ac_deputy" -> mapOf(
-                "layout" to "ac_split_deputy",
-                "title" to "副驾",
-                "value_main" to vehicleState.acMainTemp,
-                "value_deputy" to vehicleState.acDeputyTemp,
-                "min" to BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN,
-                "max" to BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX,
-            )
-            "seat" -> mapOf(
-                "layout" to "seat",
-                "title" to seatLevelLabel(vehicleState.seatLevel),
-                "value" to vehicleState.seatLevel,
-                "min" to SEAT_LEVEL_MIN,
-                "max" to SEAT_LEVEL_MAX,
-            )
+            "seat" -> {
+                val slot = seatSlots[currentSeatIndex]
+                val level = seatLevelFor(slot.id)
+                mapOf(
+                    // 标题只留座位名——加热/通风状态交给数字本身 + 圆弧颜色
+                    // 表达（gradient_color 在负值这一侧是蓝/青，正值是橙/红，
+                    // 见 firmware/src/main.cpp），不用汉字重复一遍。
+                    "layout" to "seat",
+                    "title" to slot.label,
+                    "value" to level,
+                    "min" to SEAT_LEVEL_MIN,
+                    "max" to SEAT_LEVEL_MAX,
+                    "sub_count" to seatSlots.size,
+                    "sub_index" to currentSeatIndex,
+                )
+            }
             else -> mapOf("layout" to "none", "title" to "首页", "value" to 0, "min" to 0, "max" to 0)
         }
         bleManager?.write(data)
@@ -554,7 +659,12 @@ class MainPlugin : KnobPlugin {
             .putString(KEY_PAGE, currentPageId)
             .putInt(KEY_AC_MAIN, vehicleState.acMainTemp)
             .putInt(KEY_AC_DEPUTY, vehicleState.acDeputyTemp)
-            .putInt(KEY_SEAT_LEVEL, vehicleState.seatLevel)
+            .putInt(KEY_SEAT_LEVEL_DRIVER, vehicleState.seatLevelDriver)
+            .putInt(KEY_SEAT_LEVEL_PASSENGER, vehicleState.seatLevelPassenger)
+            .putInt(KEY_SEAT_LEVEL_REAR_LEFT, vehicleState.seatLevelRearLeft)
+            .putInt(KEY_SEAT_LEVEL_REAR_RIGHT, vehicleState.seatLevelRearRight)
+            .putInt(KEY_CURRENT_SEAT_INDEX, currentSeatIndex)
+            .putBoolean(KEY_AC_SPLIT_SHOWING_MAIN, acSplitShowingMain)
             .apply()
     }
 
@@ -569,7 +679,12 @@ class MainPlugin : KnobPlugin {
         if (currentPageId !in pages) currentPageId = "ac_link"
         vehicleState.acMainTemp = prefs.getInt(KEY_AC_MAIN, 22)
         vehicleState.acDeputyTemp = prefs.getInt(KEY_AC_DEPUTY, 22)
-        vehicleState.seatLevel = prefs.getInt(KEY_SEAT_LEVEL, 0)
+        vehicleState.seatLevelDriver = prefs.getInt(KEY_SEAT_LEVEL_DRIVER, 0)
+        vehicleState.seatLevelPassenger = prefs.getInt(KEY_SEAT_LEVEL_PASSENGER, 0)
+        vehicleState.seatLevelRearLeft = prefs.getInt(KEY_SEAT_LEVEL_REAR_LEFT, 0)
+        vehicleState.seatLevelRearRight = prefs.getInt(KEY_SEAT_LEVEL_REAR_RIGHT, 0)
+        currentSeatIndex = prefs.getInt(KEY_CURRENT_SEAT_INDEX, 0).coerceIn(0, seatSlots.size - 1)
+        acSplitShowingMain = prefs.getBoolean(KEY_AC_SPLIT_SHOWING_MAIN, true)
     }
 
     // ==================== 页面渲染（纯代码构建 View，避免资源 ID 冲突） ====================
@@ -578,8 +693,7 @@ class MainPlugin : KnobPlugin {
     private val pages: Map<String, () -> View> = mapOf(
         "home" to { buildHomePage() },
         "ac_link" to { buildAcPage() },
-        "ac_main" to { buildAcPage() },
-        "ac_deputy" to { buildAcPage() },
+        "ac_split" to { buildAcPage() },
         "seat" to { buildSeatPage() },
     )
 
@@ -690,16 +804,17 @@ class MainPlugin : KnobPlugin {
     }
 
     /**
-     * 空调三个停靠点共用一个构建函数，按 currentPageId 决定画法——跟旋钮
+     * 空调两个停靠点共用一个构建函数，按 currentPageId 决定画法——跟旋钮
      * 屏幕的 layout 分发是同一个思路：ac_link 只有联动一组温度框；
-     * ac_main/ac_deputy 各自的主要那组可编辑，另一侧只读展示做参考，
-     * 不提供 ± /OK。
+     * ac_split 是分控，主驾/副驾共用这一个停靠点，[acSplitShowingMain]
+     * 决定当前哪一侧可编辑，"切换" 按钮跟旋钮双击是同一个 cycleAcSplitSide()
+     * 入口，另一侧只读展示做参考，不提供 ±/OK。
      */
     private fun buildAcPage(): View {
         val ctx = appContext!!
-        val title = when (currentPageId) {
-            "ac_main" -> "❄️ 空调温度（分控·主驾）"
-            "ac_deputy" -> "❄️ 空调温度（分控·副驾）"
+        val title = when {
+            currentPageId == "ac_split" && acSplitShowingMain -> "❄️ 空调温度（分控·主驾）"
+            currentPageId == "ac_split" -> "❄️ 空调温度（分控·副驾）"
             else -> "❄️ 空调温度（联动）"
         }
         return Ui.vStack(ctx).apply {
@@ -717,31 +832,34 @@ class MainPlugin : KnobPlugin {
                         refreshCurrentPage()
                     }
                 ))
-                "ac_main" -> {
-                    addView(buildTempRow(
-                        label = "主驾温度",
-                        value = vehicleState.acMainTemp,
-                        onChange = { vehicleState.acMainTemp = it; persistState(); refreshCurrentPage() },
-                        onOk = {
-                            commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_MAIN, value = vehicleState.acMainTemp)
-                            refreshCurrentPage()
-                        }
-                    ))
+                "ac_split" -> {
+                    addView(Ui.btn(ctx, if (acSplitShowingMain) "切到副驾" else "切到主驾") { cycleAcSplitSide() })
                     addView(Ui.space(ctx, 0, 8))
-                    addView(Ui.label(ctx, "副驾温度 ${vehicleState.acDeputyTemp}°C（参考，去副驾停靠点调整）"))
-                }
-                "ac_deputy" -> {
-                    addView(buildTempRow(
-                        label = "副驾温度",
-                        value = vehicleState.acDeputyTemp,
-                        onChange = { vehicleState.acDeputyTemp = it; persistState(); refreshCurrentPage() },
-                        onOk = {
-                            commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_DEPUTY, value = vehicleState.acDeputyTemp)
-                            refreshCurrentPage()
-                        }
-                    ))
-                    addView(Ui.space(ctx, 0, 8))
-                    addView(Ui.label(ctx, "主驾温度 ${vehicleState.acMainTemp}°C（参考，去主驾停靠点调整）"))
+                    if (acSplitShowingMain) {
+                        addView(buildTempRow(
+                            label = "主驾温度",
+                            value = vehicleState.acMainTemp,
+                            onChange = { vehicleState.acMainTemp = it; persistState(); refreshCurrentPage() },
+                            onOk = {
+                                commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_MAIN, value = vehicleState.acMainTemp)
+                                refreshCurrentPage()
+                            }
+                        ))
+                        addView(Ui.space(ctx, 0, 8))
+                        addView(Ui.label(ctx, "副驾温度 ${vehicleState.acDeputyTemp}°C（参考，点按钮切到副驾调整）"))
+                    } else {
+                        addView(buildTempRow(
+                            label = "副驾温度",
+                            value = vehicleState.acDeputyTemp,
+                            onChange = { vehicleState.acDeputyTemp = it; persistState(); refreshCurrentPage() },
+                            onOk = {
+                                commitAc(separate = true, area = BYDAutoAcDevice.AC_TEMPERATURE_DEPUTY, value = vehicleState.acDeputyTemp)
+                                refreshCurrentPage()
+                            }
+                        ))
+                        addView(Ui.space(ctx, 0, 8))
+                        addView(Ui.label(ctx, "主驾温度 ${vehicleState.acMainTemp}°C（参考，点按钮切到主驾调整）"))
+                    }
                 }
             }
             addView(Ui.space(ctx, 0, 12))
@@ -827,28 +945,31 @@ class MainPlugin : KnobPlugin {
     }
 
     /**
-     * 座椅的"标签 － 档位 ＋ OK"，跟 buildTempRow 不共用是因为这里显示的
+     * 座椅的"座位切换 － 档位 ＋ OK"，跟 buildTempRow 不共用是因为这里显示的
      * 是"通风2档"这种文字档位，不是"数值+单位"，格式完全不同。
+     * "座位:xx" 按钮跟旋钮双击是同一个 cycleSeat() 入口，切完显示新座位的档位；
      * －/＋ 只改本地待提交档位，OK 才真正下发。
      */
     private fun buildSeatRow(): View {
         val ctx = appContext!!
-        val level = vehicleState.seatLevel
+        val slot = seatSlots[currentSeatIndex]
+        val level = seatLevelFor(slot.id)
         return Ui.card(ctx).apply {
             addView(Ui.label(ctx, "座椅"))
             addView(Ui.hStack(ctx).apply {
+                addView(Ui.btn(ctx, "座位:${slot.label}") { cycleSeat() })
                 addView(Ui.btn(ctx, "－") {
-                    vehicleState.seatLevel = (level - 1).coerceIn(SEAT_LEVEL_MIN, SEAT_LEVEL_MAX)
+                    setSeatLevelFor(slot.id, (level - 1).coerceIn(SEAT_LEVEL_MIN, SEAT_LEVEL_MAX))
                     persistState()
                     refreshCurrentPage()
                 })
                 addView(Ui.text(ctx, seatLevelLabel(level), size = 18f, bold = true))
                 addView(Ui.btn(ctx, "＋") {
-                    vehicleState.seatLevel = (level + 1).coerceIn(SEAT_LEVEL_MIN, SEAT_LEVEL_MAX)
+                    setSeatLevelFor(slot.id, (level + 1).coerceIn(SEAT_LEVEL_MIN, SEAT_LEVEL_MAX))
                     persistState()
                     refreshCurrentPage()
                 })
-                addView(Ui.btn(ctx, "OK") { commitSeatLevel(vehicleState.seatLevel) })
+                addView(Ui.btn(ctx, "OK") { commitSeatLevel(slot.id, seatLevelFor(slot.id)) })
             })
         }
     }

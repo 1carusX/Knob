@@ -4,7 +4,11 @@
 // 本地这份副本、立刻重绘，不再每转一档就等手机一次——避免了转动和屏幕
 // 更新之间的蓝牙往返延迟。单击（Tab）切到下一个停靠点，长按（Enter）
 // 才把编辑到的最终值带给手机去真正应用（对应插件那边只有 Enter 会调用
-// 车控接口，转动期间不会触发大量真实车控调用）。
+// 车控接口，转动期间不会触发大量真实车控调用）。双击（CycleSub）用来
+// 在"复合停靠点"内部切换子项（比如座椅切主驾/副驾/左后/右后，空调分控
+// 切主驾/副驾），固件这边无条件识别双击、不知道当前停靠点是不是复合
+// 停靠点——要不要响应交给手机插件根据 currentPageId 决定，见
+// encoder_take_double_click 的注释。
 //
 // 屏幕同时还要同步配对/连接状态（未连接、正在配对、刚配对成功、
 // 断开重连），不是一直都在显示手机推来的数据——见下面的 ScreenState。
@@ -39,6 +43,13 @@ static lv_obj_t *s_label_value;  // 单数字布局（ac_link/seat）用的大�
 static lv_obj_t *s_label_left;   // 双数字布局用：左边，固定对应主驾
 static lv_obj_t *s_label_right;  // 双数字布局用：右边，固定对应副驾
 static lv_obj_t *s_arc;
+
+// 复合停靠点（比如座椅切 4 个座位、空调分控切主驾/副驾）用的底部子页
+// 指示点——n 个点代表有 n 个子页，选中的那个白色，其它灰色。数量按
+// MainPlugin 目前的实际子页数（座椅 4 个）留够上限；不是复合停靠点时
+// （sub_count<=1）全部隐藏，见 update_sub_dots()。
+constexpr int MAX_SUB_DOTS = 4;
+static lv_obj_t *s_sub_dots[MAX_SUB_DOTS];
 
 // 屏幕当前处在哪个阶段。除了"显示手机推来的数据"这个主状态，还要
 // 覆盖配对码/配对成功提示/未连接这几种状态，所以单独做一个简单状态机，
@@ -117,6 +128,11 @@ static volatile int16_t s_min = 0;
 static volatile int16_t s_max = 0;
 static volatile bool s_have_display_data = false; // 有没有收到过手机推来的真实数据
 
+// 底部子页指示点用：sub_count<=1 表示当前停靠点不是复合停靠点，一个
+// 点都不画；否则画 sub_count 个点，sub_index（0-based）那个是白色。
+static volatile int16_t s_sub_count = 0;
+static volatile int16_t s_sub_index = 0;
+
 // 配对成功提示还没消失之前，手机如果推了新数据，先缓存在这里，等提示
 // 消失后再应用——不能提示还没显示完就被数据覆盖掉。多次收到就直接
 // 覆盖，只保留最新的一份。
@@ -127,6 +143,8 @@ static volatile int16_t s_pending_value = 0;
 static volatile int16_t s_pending_secondary = 0;
 static volatile int16_t s_pending_min = 0;
 static volatile int16_t s_pending_max = 0;
+static volatile int16_t s_pending_sub_count = 0;
+static volatile int16_t s_pending_sub_index = 0;
 
 // 蓝 -> 青 -> 橙 -> 红，四段色标均匀分布在 [min,max] 上——车机空调/暖通
 // 面板最常见的冷暖配色（蓝/青读"冷"，橙/红读"热"，单调过渡，不会像
@@ -176,6 +194,29 @@ static lv_color_t color_solid() { return LV_COLOR_MAKE(0xFF, 0xFF, 0xFF); }
 static lv_color_t color_hollow() { return LV_COLOR_MAKE(0x66, 0x66, 0x66); }
 static lv_color_t color_reference() { return LV_COLOR_MAKE(0x88, 0x88, 0x88); } // 双数字布局里"另一侧、不可编辑"的固定颜色
 
+// 按 s_sub_count/s_sub_index 摆放/显示底部指示点，选中的白色、其它灰色；
+// s_sub_count<=1（不是复合停靠点，或者只有一个子项没什么好切的）时
+// 全部隐藏。点的总宽度随 count 变化，每次都重新居中，不是固定位置。
+static void update_sub_dots() {
+    int count = s_sub_count;
+    if (count > MAX_SUB_DOTS) count = MAX_SUB_DOTS; // 保护性截断，理论上不会发生
+    if (count <= 1) {
+        for (int i = 0; i < MAX_SUB_DOTS; i++) lv_obj_add_flag(s_sub_dots[i], LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    constexpr int32_t DOT_SIZE = 10;
+    constexpr int32_t DOT_PITCH = 20; // 点心到点心的间距（大小 + 间隔）
+    int32_t total_width = (count - 1) * DOT_PITCH + DOT_SIZE;
+    int32_t start_x = -total_width / 2 + DOT_SIZE / 2;
+    for (int i = 0; i < count; i++) {
+        lv_obj_t *dot = s_sub_dots[i];
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(dot, LV_ALIGN_BOTTOM_MID, start_x + i * DOT_PITCH, -14);
+        lv_obj_set_style_bg_color(dot, i == s_sub_index ? color_solid() : color_hollow(), 0);
+    }
+    for (int i = count; i < MAX_SUB_DOTS; i++) lv_obj_add_flag(s_sub_dots[i], LV_OBJ_FLAG_HIDDEN);
+}
+
 // 三个屏幕状态各自的重绘逻辑，统一由 redraw() 按 s_screen_state 分发。
 // 数值圆弧只有在真正显示手机数据时才有意义，其它状态一律隐藏，屏幕
 // 中间只剩两行文字。
@@ -188,6 +229,7 @@ static void redraw_disconnected() {
     lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_label_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_label_right, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < MAX_SUB_DOTS; i++) lv_obj_add_flag(s_sub_dots[i], LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(s_label_value, LV_OBJ_FLAG_HIDDEN);
     reset_label_value_style(); // 这几个状态显示中文/设备名，不用大号数字字体
     if (s_pending_passkey >= 0) {
@@ -218,6 +260,7 @@ static void redraw_paired_toast() {
     lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_label_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_label_right, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < MAX_SUB_DOTS; i++) lv_obj_add_flag(s_sub_dots[i], LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(s_label_value, LV_OBJ_FLAG_HIDDEN);
     reset_label_value_style();
     // 真的走过配对码确认才是"配对成功"；已配对设备用保存的密钥重新
@@ -236,6 +279,7 @@ static void redraw_normal() {
         lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_label_left, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_label_right, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < MAX_SUB_DOTS; i++) lv_obj_add_flag(s_sub_dots[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(s_label_value, LV_OBJ_FLAG_HIDDEN);
         reset_label_value_style();
         lv_label_set_text(s_label_name, "已连接");
@@ -246,6 +290,7 @@ static void redraw_normal() {
 
     lv_obj_remove_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_label_name, s_title);
+    update_sub_dots();
 
     // BOOT 长按清除配对那个红色/长按提交那个琥珀色进度环（见
     // draw_reset_progress/draw_commit_progress）会把 s_arc 的背景角度/
@@ -418,6 +463,10 @@ static void on_display_update(const DisplayData &data) {
     const char *title = data.getString("title");
     int16_t min = data.getInt("min");
     int16_t max = data.getInt("max");
+    // 复合停靠点（座椅切座位、空调分控切主副驾）才会带这两个字段，不是
+    // 复合停靠点时插件不发，默认值 0 表示"不用画指示点"，见 update_sub_dots()。
+    int16_t sub_count = data.getInt("sub_count", 0);
+    int16_t sub_index = data.getInt("sub_index", 0);
     // "正在编辑的数字"在双数字布局下是 value_main 还是 value_deputy，
     // 由 layout 决定；另一侧存进 secondary，只读展示，转动不碰它。
     int16_t value;
@@ -443,6 +492,8 @@ static void on_display_update(const DisplayData &data) {
         s_pending_secondary = secondary;
         s_pending_min = min;
         s_pending_max = max;
+        s_pending_sub_count = sub_count;
+        s_pending_sub_index = sub_index;
         s_display_pending = true;
         return;
     }
@@ -455,6 +506,8 @@ static void on_display_update(const DisplayData &data) {
     s_secondary_value = secondary;
     s_min = min;
     s_max = max;
+    s_sub_count = sub_count;
+    s_sub_index = sub_index;
     s_have_display_data = true;
     s_screen_state = SCREEN_NORMAL;
     // 这个回调（跟上面几个一样）跑在 NimBLE 后台任务线程上，真正的
@@ -509,6 +562,21 @@ static void build_ui() {
     s_label_right = lv_label_create(scr);
     lv_obj_align(s_label_right, LV_ALIGN_CENTER, 38, 8);
     lv_obj_add_flag(s_label_right, LV_OBJ_FLAG_HIDDEN);
+
+    // 底部子页指示点：固定造够 MAX_SUB_DOTS 个，具体这一帧显示几个、
+    // 摆在哪由 update_sub_dots() 按 s_sub_count 动态决定，这里先全部隐藏、
+    // 位置随便给一个占位值。s_arc 底部留了 90 度缺口（见上面的创建代码），
+    // 这一排点摆在这个缺口里，不会被圆弧盖住。
+    for (int i = 0; i < MAX_SUB_DOTS; i++) {
+        lv_obj_t *dot = lv_obj_create(scr);
+        lv_obj_set_size(dot, 10, 10);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+        s_sub_dots[i] = dot;
+    }
 }
 
 // 长按 BOOT 键触发清除配对期间，借用 s_arc 画一圈红色进度环（绕屏幕
@@ -695,6 +763,8 @@ void loop() {
             s_secondary_value = s_pending_secondary;
             s_min = s_pending_min;
             s_max = s_pending_max;
+            s_sub_count = s_pending_sub_count;
+            s_sub_index = s_pending_sub_index;
             s_have_display_data = true;
             s_display_pending = false;
         }
@@ -727,6 +797,11 @@ void loop() {
     if (encoder_take_click() && s_screen_state == SCREEN_NORMAL) {
         Serial.println("[BTN] click -> TAB (下一个停靠点)");
         ble_send_key(KEYCODE_TAB);
+    }
+
+    if (encoder_take_double_click() && s_screen_state == SCREEN_NORMAL) {
+        Serial.println("[BTN] double-click -> CYCLE_SUB (座椅子项切换)");
+        ble_send_key(KEYCODE_CYCLE_SUB);
     }
 
     if (encoder_take_long_press() && s_screen_state == SCREEN_NORMAL && s_have_display_data) {

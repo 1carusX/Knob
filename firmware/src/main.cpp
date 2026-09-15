@@ -2,12 +2,15 @@
 // 屏幕显示"当前正在编辑的一个停靠点"（联动/分控-主驾/分控-副驾/座椅），
 // 手机每次切停靠点/提交后回执都会推一份新的过来当起点；转动旋钮只改
 // 本地这份副本、立刻重绘，不再每转一档就等手机一次——避免了转动和屏幕
-// 更新之间的蓝牙往返延迟。单击（Tab）切到下一个停靠点，长按（Enter）
-// 才把编辑到的最终值带给手机去真正应用（对应插件那边只有 Enter 会调用
-// 车控接口，转动期间不会触发大量真实车控调用）。双击（CycleSub）用来
-// 在"复合停靠点"内部切换子项（比如座椅切主驾/副驾/左后/右后，空调分控
-// 切主驾/副驾），固件这边无条件识别双击、不知道当前停靠点是不是复合
-// 停靠点——要不要响应交给手机插件根据 currentPageId 决定，见
+// 更新之间的蓝牙往返延迟。单击（CycleSub）在"复合停靠点"内部切换子项
+// （比如座椅切主驾/副驾/左后/右后，空调分控切主驾/副驾），双击（Tab）
+// 才切到下一个停靠点，长按（Enter）把编辑到的最终值带给手机去真正应用
+// （对应插件那边只有 Enter 会调用车控接口，转动期间不会触发大量真实车
+// 控调用）。单击/双击特意反过来分配：手慢了没跟上双击判定窗口，最坏
+// 情况是被误判成一次单击（原地切子项，还在同一个功能里），而不是误判
+// 成切到下一个完全不相关的停靠点——后者代价明显更高，不该让更容易失手
+// 的手势（双击）承担。固件无条件识别单击/双击、不知道当前停靠点是不是
+// 复合停靠点——要不要响应交给手机插件根据 currentPageId 决定，见
 // encoder_take_double_click 的注释。
 //
 // 屏幕同时还要同步配对/连接状态（未连接、正在配对、刚配对成功、
@@ -794,14 +797,18 @@ void loop() {
     // 交互，避免提示还没看清就被打断。ble_is_paired() 已经在
     // ble_send_key* 内部检查过一次，这里的 s_screen_state 检查是额外
     // 的交互层面限制，不是安全检查。
+    //
+    // 单击/双击对应的键码特意反过来分配（单击=CycleSub、双击=Tab），见
+    // 文件顶部的说明：双击判定窗口没跟上时最坏也就是原地切一次子项，
+    // 不会被误判成跳到完全不相关的下一个停靠点。
     if (encoder_take_click() && s_screen_state == SCREEN_NORMAL) {
-        Serial.println("[BTN] click -> TAB (下一个停靠点)");
-        ble_send_key(KEYCODE_TAB);
+        Serial.println("[BTN] click -> CYCLE_SUB (座椅/分控子项切换)");
+        ble_send_key(KEYCODE_CYCLE_SUB);
     }
 
     if (encoder_take_double_click() && s_screen_state == SCREEN_NORMAL) {
-        Serial.println("[BTN] double-click -> CYCLE_SUB (座椅子项切换)");
-        ble_send_key(KEYCODE_CYCLE_SUB);
+        Serial.println("[BTN] double-click -> TAB (下一个停靠点)");
+        ble_send_key(KEYCODE_TAB);
     }
 
     if (encoder_take_long_press() && s_screen_state == SCREEN_NORMAL && s_have_display_data) {

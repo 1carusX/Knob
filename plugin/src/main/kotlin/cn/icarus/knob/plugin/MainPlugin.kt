@@ -56,8 +56,9 @@ class MainPlugin : KnobPlugin {
         private const val SEAT_LEVEL_MIN = -2
         private const val SEAT_LEVEL_MAX = 2
 
-        // 旋钮固件双击专用键码，不对应真实 Android 按键，跟
-        // firmware/src/ble.h 的 KEYCODE_CYCLE_SUB 数值对齐。
+        // 旋钮固件单击触发的键码（固件把单击/双击反过来分配了，见
+        // firmware/src/ble.h 的说明），不对应真实 Android 按键，数值跟
+        // 那边的 KEYCODE_CYCLE_SUB 对齐。
         private const val KEYCODE_CYCLE_SUB = 67
     }
 
@@ -84,7 +85,7 @@ class MainPlugin : KnobPlugin {
     )
 
     /**
-     * "座椅"这一个停靠点内部要在 4 个座位间切换（旋钮双击/触屏按钮，见
+     * "座椅"这一个停靠点内部要在 4 个座位间切换（旋钮单击/触屏按钮，见
      * [cycleSeat]），转动/长按永远只作用于 [currentSeatIndex] 指向的这一个——
      * 不用再把"主驾座椅""副驾座椅"…拆成 4 个独立停靠点。座位编号见
      * CarControl 类注释：1=主驾/2=副驾/3=后左/4=后右。
@@ -115,7 +116,7 @@ class MainPlugin : KnobPlugin {
         }
     }
 
-    /** 切到下一个座位（主驾→副驾→左后→右后循环），旋钮双击和触屏按钮共用同一个入口。 */
+    /** 切到下一个座位（主驾→副驾→左后→右后循环），旋钮单击和触屏按钮共用同一个入口。 */
     private fun cycleSeat() {
         currentSeatIndex = (currentSeatIndex + 1) % seatSlots.size
         host?.log("🪑 切换座位 -> ${seatSlots[currentSeatIndex].label}")
@@ -124,7 +125,7 @@ class MainPlugin : KnobPlugin {
     }
 
     // 空调分控（ac_split）也是一个复合停靠点：主驾/副驾共用同一个停靠点，
-    // 双击/触屏按钮在两者间切换（跟座椅同一个思路），不需要各自占一个
+    // 单击/触屏按钮在两者间切换（跟座椅同一个思路），不需要各自占一个
     // 停靠点。true=当前在编辑主驾，false=副驾。
     private var acSplitShowingMain = true
 
@@ -147,11 +148,11 @@ class MainPlugin : KnobPlugin {
     private val vehicleState = VehicleState()
 
     // 当前停靠点 id，持久化 + 同步给 knob 屏幕。这一份状态是旋钮和触屏
-    // 共用的同一套状态机——物理旋钮的转/单击/长按和触屏的按钮只是同一套
-    // 状态机的两种输入方式，不是各自独立的两份逻辑。knobCyclePages 是
-    // 单击（物理 Tab / 触屏"下一个"按钮）能循环到的停靠点，首页不算在
+    // 共用的同一套状态机——物理旋钮的转/单击/双击/长按和触屏的按钮只是
+    // 同一套状态机的两种输入方式，不是各自独立的两份逻辑。knobCyclePages
+    // 是双击（物理 Tab / 触屏"下一个"按钮）能循环到的停靠点，首页不算在
     // 内——旋钮场景下没有"回菜单"的需求，首页只是触屏进入时的一个入口，
-    // 靠页面里的按钮跳转，旋钮单击不会经过它。
+    // 靠页面里的按钮跳转，旋钮双击不会经过它。
     private var currentPageId: String = "ac_link"
     private val knobCyclePages = listOf("ac_link", "ac_split", "seat")
 
@@ -445,11 +446,14 @@ class MainPlugin : KnobPlugin {
     /**
      * 按键处理，返回是否消费。
      *
-     * 旋钮映射：Tab=切下一个停靠点（ac_link/ac_split/seat 循环），
-     * Enter=确认（对应触屏页面上的 OK）。旋钮转动本身完全在固件本地处理、
-     * 不再上报给手机——长按 Enter 时才把旋钮本地编辑到的最终值（value）
-     * 一起带过来，直接拿去应用，不需要手机在转动过程中跟着增量调整。
-     * 双击（CycleSub）用来在"复合停靠点"内部切子项——固件无条件识别双击，
+     * 旋钮映射：Tab（双击触发）=切下一个停靠点（ac_link/ac_split/seat 循环），
+     * Enter（长按触发）=确认（对应触屏页面上的 OK）。旋钮转动本身完全在
+     * 固件本地处理、不再上报给手机——长按 Enter 时才把旋钮本地编辑到的
+     * 最终值（value）一起带过来，直接拿去应用，不需要手机在转动过程中
+     * 跟着增量调整。单击（CycleSub）用来在"复合停靠点"内部切子项——单击/
+     * 双击是固件那边特意反过来分配的（双击判定有窗口延迟，手慢了没跟上
+     * 会被拆成单击，代价应该是"原地切一次子项"而不是"跳到下一个不相关
+     * 的停靠点"，见 firmware/src/main.cpp 的说明）。固件无条件识别单击，
      * 不知道当前是不是复合停靠点，这里按 currentPageId 决定要不要响应，
      * 没有子项可切的停靠点收到这个键码直接忽略。
      * 系统返回键不再有特殊处理——停靠点之间是平级切换，没有"返回上一个"
@@ -501,7 +505,7 @@ class MainPlugin : KnobPlugin {
     }
 
     /**
-     * 切到循环列表里的下一个停靠点——物理旋钮单击和触屏"下一个"按钮
+     * 切到循环列表里的下一个停靠点——物理旋钮双击和触屏"下一个"按钮
      * 都调这一个函数，保证两条输入路径走的是同一套状态机。
      */
     private fun advanceStop() {
@@ -807,7 +811,7 @@ class MainPlugin : KnobPlugin {
      * 空调两个停靠点共用一个构建函数，按 currentPageId 决定画法——跟旋钮
      * 屏幕的 layout 分发是同一个思路：ac_link 只有联动一组温度框；
      * ac_split 是分控，主驾/副驾共用这一个停靠点，[acSplitShowingMain]
-     * 决定当前哪一侧可编辑，"切换" 按钮跟旋钮双击是同一个 cycleAcSplitSide()
+     * 决定当前哪一侧可编辑，"切换" 按钮跟旋钮单击是同一个 cycleAcSplitSide()
      * 入口，另一侧只读展示做参考，不提供 ±/OK。
      */
     private fun buildAcPage(): View {
@@ -920,7 +924,7 @@ class MainPlugin : KnobPlugin {
     /**
      * 座椅的"座位切换 － 档位 ＋ OK"，跟 buildTempRow 不共用是因为这里显示的
      * 是"通风2档"这种文字档位，不是"数值+单位"，格式完全不同。
-     * "座位:xx" 按钮跟旋钮双击是同一个 cycleSeat() 入口，切完显示新座位的档位；
+     * "座位:xx" 按钮跟旋钮单击是同一个 cycleSeat() 入口，切完显示新座位的档位；
      * －/＋ 只改本地待提交档位，OK 才真正下发。
      */
     private fun buildSeatRow(): View {

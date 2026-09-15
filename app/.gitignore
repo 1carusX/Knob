@@ -20,3 +20,7 @@ captures/
 *.aab
 app/debug/
 app/release/
+# byd/generic 两个 flavor 各自的产物目录（含 apk 之外的 output-metadata.json、
+# baselineProfiles/*.dm 这些 *.apk 规则盖不到的文件，整目录一起忽略更省心）
+app/byd/
+app/generic/

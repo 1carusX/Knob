@@ -18,26 +18,31 @@
 | 直接 HAL 车控被 signature 级权限挡死（`[setIntArray] permission deny` / `[getInt] permission deny`） | 同上 |
 | **不存在额外的包名白名单机制**：权限门槛就是签名本身，拿到车机厂商签发的签名即可获得对应权限 | `docs/验证结论.md` 关键推论 |
 | 车控唯一路线：**用车机厂商签名签壳**（壳进程 UID 继承权限，DEX 继承）。签名已通过官方开发者认证流程申请到位 | `docs/验证结论.md`、`docs/项目历程与架构.md` |
-| 旋钮↔手机是**自定义 BLE GATT**，不是标准 BLE HID：最初计划用 HID 键盘 + 无障碍服务捕获按键，实测目标车机未暴露无障碍设置入口、这条路走不通，已弃用；无障碍服务在本项目中已完全移除 | `docs/验证结论.md`、`app/.../ble/BleManager.kt` |
+| 旋钮↔手机是**自定义 BLE GATT**，不是标准 BLE HID：最初计划用 HID 键盘 + 无障碍服务捕获按键，实测目标车机未暴露无障碍设置入口、这条路走不通，已弃用；无障碍服务在本项目中已完全移除 | `docs/验证结论.md`、`plugin/.../plugin/BleManager.kt` |
 | 插件 DEX **不能打包 Android 资源、不能声明 Manifest 组件**（Activity/Service/Receiver） | `docs/壳-DEX热加载架构设计.md` |
 | 插件代码跑在壳进程（壳 UID），`api/` 下的契约类必须同时存在于壳与插件的编译 classpath | 同上 |
 | 只用车机厂商官方 SDK 声明的接口；未声明但反射确认存在的方法（如座椅加热）通过反射调用 | `plugin/.../CarControl.kt` |
+| `BYDAUTO_*` 权限只在 `byd` flavor 声明；`generic` 变体的壳装不了真实 `plugin.dex`（`CarControl.kt` 硬依赖的 `android.hardware.bydauto.*` 类在非比亚迪设备上根本不存在，调用即 `NoClassDefFoundError`），只能配 `plugin-simulate.dex` | `app/app/build.gradle.kts`、`src/byd/`、`src/generic/` |
 
 ## 3. 架构与文件地图
 
-### 壳 `app/`（Android 工程，applicationId `cn.icarus.knob`）
+### 壳 `app/`（Android 工程）
+
+按目标平台分 `byd`/`generic` 两个 **flavor**（`app/app/build.gradle.kts` 的 `flavorDimensions`）：`byd`（比亚迪车机，applicationId 加 `.byd` 后缀）带全部 BYDAUTO 权限；`generic`（通用手机，原 applicationId `cn.icarus.knob`）不含任何平台专属权限，只有蓝牙。壳代码本身（`KnobActivity.kt` 等）不写死任何平台字符串，全部权限列表/图标/文案由 `PlatformConfig` 按 flavor 决定。
 
 | 文件 | 职责 |
 |------|------|
+| `app/src/byd/java/cn/icarus/knob/PlatformConfig.kt`、`app/src/generic/java/cn/icarus/knob/PlatformConfig.kt` | 同包同名对象，仅 `byd` 一份非空：`runtimePerms`（需要按钮申请的 dangerous 权限）+ `statusPermissions`（状态日志要打印的全部权限）。跟 `plugin/` 的 `BuildFlags.kt` 是同一个"同路径两份、值不同"套路 |
+| `app/src/byd/AndroidManifest.xml` | manifest overlay，编译期合入基座，声明 6 个 `BYDAUTO_*` 权限；`generic` 没有这份文件、也就没有这些权限 |
+| `app/src/main/java/cn/icarus/knob/RuntimePerm.kt` | `PlatformConfig.runtimePerms` 元素的通用数据类（`perm`/`icon`/`label`），本身不含平台字符串 |
 | `app/src/main/java/cn/icarus/knob/api/KnobPlugin.kt` | 壳↔DEX 契约接口（四功能域，见下） |
-| `app/src/main/java/cn/icarus/knob/api/KnobHost.kt` | 插件反向调壳的能力：`log` / `pushToKnob` |
+| `app/src/main/java/cn/icarus/knob/api/KnobHost.kt` | 插件反向调壳的能力：只剩 `log`——BLE 连接整体归插件自己的 `BleManager` 管，不再经壳转发 |
 | `app/src/main/java/cn/icarus/knob/api/Ui.kt` | 纯代码构建 View 的工具（插件无资源，只能走代码 UI） |
-| `app/src/main/java/cn/icarus/knob/plugin/PluginLoader.kt` | 从私有目录 `filesDir/knob/plugin.dex` 加载；`importDex()` 把用户选中的 dex 拷进私有目录 |
-| `app/src/main/java/cn/icarus/knob/host/KnobHostImpl.kt` | `KnobHost` 实现：日志转 LogSink；`pushToKnob` 原样把 Map 交给 `BleManager.write()` 编码下发 |
-| `app/src/main/java/cn/icarus/knob/ble/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道：自定义 GATT（按键事件 NOTIFY + 显示同步 WRITE），断线重连轮询，收到按键通知后直接转发给插件 |
+| `app/src/main/java/cn/icarus/knob/plugin/PluginLoader.kt` | 从私有目录 `filesDir/knob/plugin.dex` 加载；`importDex()` 把用户选中的 dex 拷进私有目录；换新实例前调旧实例 `onDestroy()`（插件自己持有 BLE 连接，不清理会泄漏） |
+| `app/src/main/java/cn/icarus/knob/host/KnobHostImpl.kt` | `KnobHost` 实现：`log()` 转发到 LogSink，仅此而已 |
 | `app/src/main/java/cn/icarus/knob/BootReceiver.kt` | 监听 `BOOT_COMPLETED`/`QUICKBOOT_POWERON`，仅记日志确认车机走的是哪条开机路径 |
-| `app/src/main/java/cn/icarus/knob/KnobActivity.kt` | 主界面：左列日志 + 按钮（选择插件/清空日志/保存日志/权限申请）；右列 `pluginContainer` 经 `ui.bind` 交给插件，`onDestroy` 发 `ui.unbind`；`dispatchKeyEvent` 把系统按键（如返回键）转发给插件 |
-| `app/src/main/java/cn/icarus/knob/KnobApp.kt` | Application：进程启动时启动 `BleManager` 重连轮询，并**同步**加载插件、调用 `init`（必然早于 Activity.onCreate，`ui.bind` 才能命中） |
+| `app/src/main/java/cn/icarus/knob/KnobActivity.kt` | 主界面：左列日志 + 按钮（选择插件/清空日志/保存日志 + `PlatformConfig` 动态生成的权限申请按钮行）；右列 `pluginContainer` 经 `ui.bind` 交给插件，`onDestroy` 发 `ui.unbind`；`dispatchKeyEvent` 把系统按键（如返回键）转发给插件 |
+| `app/src/main/java/cn/icarus/knob/KnobApp.kt` | Application：进程启动时**同步**加载插件、调用 `init`（必然早于 Activity.onCreate，`ui.bind` 才能命中）。不碰 BLE——连不连、什么时候连是插件自己的决定 |
 | `app/src/main/java/cn/icarus/knob/util/LogSink.kt` / `CrashHandler.kt` | 日志（车机无 adb，App 内 TextView 即唯一观测手段）与崩溃兜底 |
 
 ### 插件 `plugin/`（纯 JVM + Kotlin，产物 `plugin/output/plugin.dex`）
@@ -45,6 +50,7 @@
 | 文件 | 职责 |
 |------|------|
 | `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域路由 + 自管页面栈 |
+| `src/main/kotlin/cn/icarus/knob/plugin/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道（自定义 GATT，不是标准 HID）：认哪个设备、扫描/配对、断线重连轮询、按键 NOTIFY 解码、显示数据 WRITE 编码，全部归插件自己管，不经壳。生命周期绑定插件实例——重新导入 `plugin.dex` 会连带断开当前 BLE 连接（`MainPlugin` 通过 `onKeyEvent`/`onConnectionStateChanged`/`onCandidateFound` 三个回调属性接收事件，不是接口方法） |
 | `src/main/kotlin/cn/icarus/knob/plugin/CarControl.kt` | 车控引擎：BYDAUTO 设备初始化 / 空调（温度·开关·风量·风向·循环·分控）/ 座椅通风·加热 / 环境光传感器读取 |
 | `src/main/kotlin/cn/icarus/knob/plugin/PluginSelfTest.kt` | 一键全量自检 |
 | `src/main/kotlin/cn/icarus/knob/api/` | 与壳 `api/` 逐字节相同的三个契约文件（KnobPlugin / KnobHost / Ui） |
@@ -67,7 +73,7 @@ fun onDestroy()
 
 `onCommand` / `onQuery` 统一返回 `{"success":Boolean, "code":Int?, "value":Any?, "message":String}`；未知命令返回 `null`。
 
-**按键统一走 `onEvent("key", {"code": Int, "action": Int, "value": Int?})`**，但有两条不同的入口：旋钮本身的转/点/长按经 `BleManager` 解码自定义 BLE GATT 的按键通知特征值，由 `BleManager.dispatchKeyToPlugin` 直接调插件，不经过 Activity；车机物理键、系统返回键则走 `KnobActivity.dispatchKeyEvent` 这个入口。两条路径最终都落到同一个 `onEvent("key", ...)` 调用上，没有 `back.pressed` 之类的专用事件。`value` 字段只有旋钮长按确认时才带（旋钮转动只改自身屏幕的本地状态，不逐档上报），其余按键没有这个字段。`KnobActivity` 用 `dispatchKeyEvent` 而非 `onKeyDown` 是因为它在 View 树分发之前拿到事件，不会被获得焦点的按钮抢走 DPAD/ENTER。插件消费某个键时**按下与抬起要成对返回 true**，只吃一半会让系统按键状态错乱（返回键的出栈逻辑见 `MainPlugin.handleKey`）。
+**按键统一走 `onEvent("key", {"code": Int, "action": Int, "value": Int?})`**（或者插件内部直接调用同样逻辑的 `handleKey`），但有两条不同的入口：旋钮本身的转/点/长按经插件自己的 `BleManager` 解码自定义 BLE GATT 的按键通知特征值，通过 `onKeyEvent` 回调直接调 `MainPlugin.handleKey`，全程在插件内部，不经过壳/Activity；车机物理键、系统返回键则走 `KnobActivity.dispatchKeyEvent` → `onEvent("key", ...)` 这个入口。两条路径最终都落到同一份处理逻辑上，没有 `back.pressed` 之类的专用事件。`value` 字段只有旋钮长按确认时才带（旋钮转动只改自身屏幕的本地状态，不逐档上报），其余按键没有这个字段。`KnobActivity` 用 `dispatchKeyEvent` 而非 `onKeyDown` 是因为它在 View 树分发之前拿到事件，不会被获得焦点的按钮抢走 DPAD/ENTER。插件消费某个键时**按下与抬起要成对返回 true**，只吃一半会让系统按键状态错乱（返回键的出栈逻辑见 `MainPlugin.handleKey`）。
 
 **UI 绑定也走事件域**，接口不为它单开方法：
 - `onEvent("ui.bind", {"container": ViewGroup})` —— `KnobActivity.onCreate` 把右半边容器交给插件，插件开始渲染并自管页面栈。
@@ -78,8 +84,11 @@ fun onDestroy()
 ## 4. 构建命令
 
 ```bash
-# 壳（产物 app/app/build/outputs/apk/release/app-release-unsigned.apk）
-cd app && ./gradlew assembleRelease
+# 壳（byd 变体，装车用；产物 app/app/build/outputs/apk/bydRelease/app-byd-release-unsigned.apk）
+cd app && ./gradlew assembleBydRelease
+
+# 壳（generic 变体，普通手机验证 UI/BLE 用，无 BYDAUTO 权限、只能配 plugin-simulate.dex）
+cd app && ./gradlew assembleGenericRelease
 
 # 插件（真实车控）：pluginJar → d8 → plugin/output/plugin.dex（依赖本机 ANDROID_HOME；SDK 路径见 plugin/build.gradle.kts 的 fallback）
 cd plugin && ./gradlew pluginDex
@@ -107,7 +116,7 @@ cd plugin && ./gradlew pluginDexSimulate
 
 - 开机自启改用广播接收器：`BootReceiver` 静态注册 `BOOT_COMPLETED` 与 `QUICKBOOT_POWERON`（部分定制系统的非标准开机 action）。`onReceive()` 本身只记一条日志，进程能被系统投递广播前必须先拉起——这是 Android 标准广播分发机制，不需要用户手动打开任何开关（这点跟以前依赖的无障碍服务不同，无障碍服务需要用户在系统设置里手动启用才生效）。
 - ⚠️ Android 系统会扣住"从未被用户主动启动过 / 已被强制停止"的 App 的隐式广播（含 `BOOT_COMPLETED`），直到用户手动打开一次——`KnobApp.kt` 注释里"车机重启后需要手动点开一次 App 才会运行"说的就是这条系统限制，不是 bug；手动打开过一次之后，`BootReceiver` 在后续开机时才能正常生效。
-- 进程不靠特殊绑定常驻：退出 Activity 不会销毁进程（标准 Android 行为），BLE 连接由 `BleManager` 的断线重连轮询维持，可以挂在壳里长期存活。
+- 进程不靠特殊绑定常驻：退出 Activity 不会销毁进程（标准 Android 行为），BLE 连接由插件自己的 `BleManager` 断线重连轮询维持，只要插件没被换（重新导入 `plugin.dex`）就能长期存活。
 
 ## 6. 调试与验证流程
 
@@ -131,4 +140,4 @@ cd plugin && ./gradlew pluginDexSimulate
 | 问题 | 位置 | 说明 |
 |------|------|------|
 | `api/` 三个类被打进 dex | `plugin/build.gradle.kts` 的 `pluginJar` | 双亲委派下运行时实际用壳的类，暂不致命；若将来把 parent 改成 null 会 `ClassCastException` |
-| `WRITE_SECURE_SETTINGS` 拿不到 | `AndroidManifest.xml` | signature 级权限，探测阶段残留，当前代码未用 |
+| `generic` 变体误配真实 `plugin.dex` 时崩溃无提示 | `plugin/.../CarControl.kt` 的 `bydauto.*` 硬依赖 | 表现是 `NoClassDefFoundError`，日志不会直接说明原因是插件变体配错了；已知问题，暂不加运行时检测（见 §2 对应约束行） |

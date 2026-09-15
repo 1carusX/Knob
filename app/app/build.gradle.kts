@@ -12,8 +12,8 @@ android {
         applicationId = "cn.icarus.knob"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
     }
 
     // 按目标平台分两个变体：比亚迪车机（含 BYDAUTO 权限，见 src/byd/）vs

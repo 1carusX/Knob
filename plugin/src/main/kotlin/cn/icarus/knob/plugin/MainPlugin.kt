@@ -913,33 +913,6 @@ class MainPlugin : KnobPlugin {
             addView(Ui.space(ctx, 0, 12))
             addView(buildSeatRow())
             addView(Ui.space(ctx, 0, 12))
-            // 临时调试按钮：座椅加热/通风隐藏接口探测，结果只打日志，不调用
-            // 任何真实车控方法——排查完可以删掉。
-            addView(Ui.btn(ctx, "🔍 扫描 Setting 设备方法") {
-                carControl?.probeSeatFeatureMethods(appContext!!)
-            })
-            addView(Ui.btn(ctx, "🔍 查座椅加热/通风 Feature") {
-                carControl?.checkSeatFeatures(appContext!!)
-            })
-            addView(Ui.space(ctx, 0, 8))
-            // 反射扫描 + 反编译一款同类竞品应用都确认了 setSeatHeatingState(seat, state)/
-            // getSeatHeatingState(seat) 这套接口真实存在，state 官方常量是
-            // SEAT_HEATING_OFF/LOW/HIGH=1/2/3——这几个按钮就是拿这三个值
-            // 实际调一下，看物理座椅有没有反应，确认参数含义对不对。
-            // 排查完可以删掉。
-            addView(Ui.btn(ctx, "🔥 主驾加热-关(1)") {
-                carControl?.setSeatHeating(appContext!!, BYDAutoSettingDevice.DRIVER_SEAT, 1)
-            })
-            addView(Ui.btn(ctx, "🔥 主驾加热-低(2)") {
-                carControl?.setSeatHeating(appContext!!, BYDAutoSettingDevice.DRIVER_SEAT, 2)
-            })
-            addView(Ui.btn(ctx, "🔥 主驾加热-高(3)") {
-                carControl?.setSeatHeating(appContext!!, BYDAutoSettingDevice.DRIVER_SEAT, 3)
-            })
-            addView(Ui.btn(ctx, "🔍 读主驾加热状态") {
-                carControl?.getSeatHeating(appContext!!, BYDAutoSettingDevice.DRIVER_SEAT)
-            })
-            addView(Ui.space(ctx, 0, 12))
             addView(Ui.btn(ctx, "🔀 下一个") { advanceStop() })
         }
     }

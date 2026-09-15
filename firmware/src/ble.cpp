@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <NimBLEHIDDevice.h>
 #include <esp_mac.h>
 #include <string.h>
 
@@ -11,6 +12,46 @@
 static const char *kServiceUUID = "29afa70d-2312-4f04-9b36-fe9298284756";
 static const char *kKeyEventCharUUID = "182f303d-ea98-4ee4-839e-5599aaf3f29d";
 static const char *kDisplayCharUUID = "5f774e59-5079-4e69-8e5d-de0ee1220d3f";
+
+// 标准 HID Report Map（键盘 boot descriptor），仅用于让下面挂的那个标准
+// HID 服务（0x1812）看起来是个结构完整的 HID 设备——真正的按键数据完全
+// 走上面的自定义服务，这份 report map 描述的 Input Report 永远不会被
+// notify()，纯粹是"摆设"，见 ble_init() 里的说明。
+static const uint8_t kHidReportMap[] = {
+    0x05, 0x01, // Usage Page (Generic Desktop Ctrls)
+    0x09, 0x06, // Usage (Keyboard)
+    0xA1, 0x01, // Collection (Application)
+    0x85, 0x01, //   Report Id (1)
+    0x05, 0x07, //   Usage Page (Kbrd/Keypad)
+    0x19, 0xE0, //   Usage Minimum (0xE0)
+    0x29, 0xE7, //   Usage Maximum (0xE7)
+    0x15, 0x00, //   Logical Minimum (0)
+    0x25, 0x01, //   Logical Maximum (1)
+    0x75, 0x01, //   Report Size (1)
+    0x95, 0x08, //   Report Count (8)
+    0x81, 0x02, //   Input (Data,Var,Abs)
+    0x95, 0x01, //   Report Count (1)
+    0x75, 0x08, //   Report Size (8)
+    0x81, 0x01, //   Input (Const,Array,Abs)
+    0x95, 0x05, //   Report Count (5)
+    0x75, 0x01, //   Report Size (1)
+    0x05, 0x08, //   Usage Page (LEDs)
+    0x19, 0x01, //   Usage Minimum (Num Lock)
+    0x29, 0x05, //   Usage Maximum (Kana)
+    0x91, 0x02, //   Output (Data,Var,Abs)
+    0x95, 0x01, //   Report Count (1)
+    0x75, 0x03, //   Report Size (3)
+    0x91, 0x01, //   Output (Const,Array,Abs)
+    0x95, 0x06, //   Report Count (6)
+    0x75, 0x08, //   Report Size (8)
+    0x15, 0x00, //   Logical Minimum (0)
+    0x25, 0x65, //   Logical Maximum (101)
+    0x05, 0x07, //   Usage Page (Kbrd/Keypad)
+    0x19, 0x00, //   Usage Minimum (0x00)
+    0x29, 0x65, //   Usage Maximum (0x65)
+    0x81, 0x00, //   Input (Data,Array,Abs)
+    0xC0,       // End Collection
+};
 
 static NimBLECharacteristic *s_key_event_char = nullptr;
 static void (*s_display_update_cb)(const DisplayData &data) = nullptr;
@@ -229,15 +270,34 @@ void ble_init() {
     // Complete() 也就能保证每个连接周期都至少触发一次。
     s_key_event_char = service->createCharacteristic(
         kKeyEventCharUUID, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
+    // 标准 Characteristic User Description（0x2901）：私有 128 位 UUID 没有
+    // 官方注册名字，nRF Connect 之类的工具只能显示 "Unknown"，挂这个描述符
+    // 让它们能读出一个人类可读的标签，纯调试可读性用途，不影响协议本身。
+    s_key_event_char->createDescriptor((uint16_t)0x2901, NIMBLE_PROPERTY::READ)->setValue("Knob Key Event");
 
     NimBLECharacteristic *displayChar = service->createCharacteristic(
         kDisplayCharUUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     displayChar->setCallbacks(&s_display_update_callbacks);
+    displayChar->createDescriptor((uint16_t)0x2901, NIMBLE_PROPERTY::READ)->setValue("Knob Display Sync");
+
+    // 车机的蓝牙设置界面会按"设备类型"过滤扫描结果，只展示手机类/HID类
+    // 设备，我们这个纯自定义 GATT 外设会被过滤掉、压根不出现在列表里。
+    // 这里额外挂一个标准 HID 服务（0x1812）+ 把广播的 Appearance 设成
+    // Keyboard，纯粹是为了让车机认为这是个 HID 设备、愿意展示出来——
+    // 上面那两个自定义特征值（按键 NOTIFY / 显示 WRITE）才是真正干活的
+    // 通道，完全不受影响；这个 HID 服务里的 Input Report 不会被真的
+    // notify()，只是挂在 GATT 表里充数用。
+    NimBLEHIDDevice *hid = new NimBLEHIDDevice(server);
+    hid->setHidInfo(0x00, 0x02); // country=0（未本地化），flags=NormallyConnectable
+    hid->setReportMap(const_cast<uint8_t *>(kHidReportMap), sizeof(kHidReportMap));
+    hid->getInputReport(1); // 只声明结构，不会被调用 notify()
 
     server->start();
 
     NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(kServiceUUID);
+    adv->addServiceUUID(hid->getHidService()->getUUID());
+    adv->setAppearance(HID_KEYBOARD);
     NimBLEAdvertisementData scanResponse;
     scanResponse.setName(s_device_name);
     adv->setScanResponseData(scanResponse);

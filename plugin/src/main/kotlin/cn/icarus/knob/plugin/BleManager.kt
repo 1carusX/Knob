@@ -63,6 +63,16 @@ class BleManager(context: Context, private val host: KnobHost) {
     private var displayCharacteristic: BluetoothGattCharacteristic? = null
     private var keyEventCharacteristic: BluetoothGattCharacteristic? = null
 
+    // 同一条 GATT 连接同一时刻只能有一个写操作在飞（前一个的 onCharacteristicWrite
+    // 没回来之前发下一个会被系统直接拒绝）。syncToKnob() 可能被多个独立触发源
+    // 挨得很近地连续调用（比如联动模式一次改温度会给主驾/副驾各触发一次监听
+    // 回调），所以这里不能"来一个发一个"，得排队。因为每次 write() 发的都是
+    // 当前完整状态快照（不是增量），排队没意义的中间状态直接覆盖丢弃即可，只
+    // 保留最新一份——这两个字段只在主线程碰（onCharacteristicWrite 回调发生在
+    // 蓝牙 Binder 线程，见下方，会先 post 回主线程再改这两个字段）。
+    private var writeInFlight = false
+    private var pendingWrite: ByteArray? = null
+
     private fun logBoth(msg: String, isWarning: Boolean = false) {
         if (isWarning) Log.w(TAG, msg) else Log.i(TAG, msg)
         host.log("[BLE] $msg")
@@ -345,6 +355,8 @@ class BleManager(context: Context, private val host: KnobHost) {
                     gatt = null
                     displayCharacteristic = null
                     keyEventCharacteristic = null
+                    writeInFlight = false
+                    pendingWrite = null
                     notifyConnectionState(connected = false)
                     tryConnect()
                 }
@@ -394,6 +406,21 @@ class BleManager(context: Context, private val host: KnobHost) {
             // CCCD 写真正完成，此时通知"已连接"（触发 syncToKnob 写显示）才不会撞车
             if (displayCharacteristic != null) {
                 notifyConnectionState(connected = true, device = g.device)
+            }
+        }
+
+        // 显示同步特征值写完成的回执——收到这个才能发下一个排队的写，见 [pendingWrite]。
+        // 跑在蓝牙 Binder 线程，先 post 回主线程再碰 writeInFlight/pendingWrite。
+        override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (characteristic.uuid != DISPLAY_CHARACTERISTIC_UUID) return
+            mainHandler.post {
+                writeInFlight = false
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    logBoth("显示同步写入失败 status=$status", isWarning = true)
+                }
+                val next = pendingWrite ?: return@post
+                pendingWrite = null
+                issueWrite(next)
             }
         }
 
@@ -504,20 +531,34 @@ class BleManager(context: Context, private val host: KnobHost) {
 
     /**
      * 把 Map 编码成字节流写给 knob——只认值类型（Int/String/Boolean），不认
-     * key 名，字段意义由插件与固件约定。@return 是否成功发出写请求（异步，
-     * 不代表对方已收到；固件侧以串口日志为准）。
+     * key 名，字段意义由插件与固件约定。@return 是否成功接受了这次写（可能
+     * 排队等前一个写完成，不代表对方已收到；固件侧以串口日志为准）。
      */
-    @SuppressLint("MissingPermission")
     fun write(data: Map<String, Any>): Boolean {
-        val g = gatt ?: run {
+        if (gatt == null) {
             logBoth("write() 失败：GATT 还没连上", isWarning = true)
             return false
         }
-        val char = displayCharacteristic ?: run {
+        if (displayCharacteristic == null) {
             logBoth("write() 失败：显示同步特征值还没发现（服务发现可能还没完成）", isWarning = true)
             return false
         }
         val payload = encodeDisplayData(data)
+        if (writeInFlight) {
+            // 上一个写还没收到回执，这次的内容是完整状态快照、不是增量，
+            // 直接覆盖掉上一个还没发出去的排队内容即可，不用真排一条队列。
+            pendingWrite = payload
+            return true
+        }
+        return issueWrite(payload)
+    }
+
+    /** 真正发起一次写，调用方需确保 gatt/displayCharacteristic 都已就绪且当前没有写在飞。 */
+    @SuppressLint("MissingPermission")
+    private fun issueWrite(payload: ByteArray): Boolean {
+        val g = gatt ?: return false
+        val char = displayCharacteristic ?: return false
+        writeInFlight = true
         val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             g.writeCharacteristic(char, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
                 BluetoothGatt.GATT_SUCCESS
@@ -527,10 +568,9 @@ class BleManager(context: Context, private val host: KnobHost) {
             @Suppress("DEPRECATION")
             g.writeCharacteristic(char)
         }
-        // ⚠️ 特征值都在却仍被拒，通常是"同一时刻只能一个 GATT 写在飞"，跟另一个
-        // 未完成的写撞车（如刚连接时的 CCCD 订阅写），补一条日志方便定位。
         if (!ok) {
-            logBoth("write() 失败：writeCharacteristic 请求被拒绝（可能跟另一个 GATT 操作撞车了）", isWarning = true)
+            writeInFlight = false
+            logBoth("write() 失败：writeCharacteristic 发起失败", isWarning = true)
         }
         return ok
     }

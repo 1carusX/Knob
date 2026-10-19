@@ -157,9 +157,18 @@ class MainPlugin : KnobPlugin {
     private val knobCyclePages = listOf("ac_link", "ac_split", "seat")
 
     // 有没有连上 knob 的 BLE 通道——没连上时不管 currentPageId 是什么，
-    // 都强制显示"home"这个连接页（见 refreshCurrentPage），逼用户先把
-    // 蓝牙连上，不然转旋钮/戳按钮改的东西根本传不到 knob 上，改了也白改。
+    // 默认强制显示"home"这个连接页（见 refreshCurrentPage），逼用户先把
+    // 蓝牙连上，不然转旋钮改的东西根本传不到 knob 上，改了也白改。但触屏
+    // 场景下车控本身（CarControl/BYDAuto HAL）完全不依赖 BLE，用户可能
+    // 就是想单纯用触屏调空调/座椅、压根不关心旋钮有没有连上——见
+    // forceShowCarControl，允许手动越过这道门。
     private var bleConnected = false
+
+    // 用户在首页点了"跳过，直接进车控"之后置 true，绕开上面 bleConnected
+    // 的强制门；点车控页里的"返回蓝牙页"或者 BLE 真的连上后置回 false。
+    // 只影响 refreshCurrentPage() 该显示哪个页面，不影响 currentPageId
+    // 本身停靠在哪——跟旋钮的停靠点状态机是分开的两件事。
+    private var forceShowCarControl = false
 
     // 后台被动扫描发现的候选设备名字，非 null 时首页显示"发现 XXX，点击
     // 配对"。壳只发现不自动配对（弹配对框太打断），要不要真的配对由用户
@@ -494,6 +503,9 @@ class MainPlugin : KnobPlugin {
     private fun handleBleConnectionChanged(connected: Boolean, name: String?, mac: String?) {
         carControl?.log("📡 蓝牙状态: ${if (connected) "已连接" else "断开"} name=$name mac=$mac")
         bleConnected = connected
+        // 真的连上了，forceShowCarControl 这个手动越门标记就没意义了——
+        // 清掉避免下次断线时凭空继续生效，逼用户重新决定要不要再跳过。
+        if (connected) forceShowCarControl = false
         refreshCurrentPage()
     }
 
@@ -736,14 +748,16 @@ class MainPlugin : KnobPlugin {
 
     /**
      * 用当前状态重绘该显示的页面，并同步给 knob——数值调整（不切页）时用这个。
-     * 没连上 knob 时无视 currentPageId，强制显示"home"连接页（见 bleConnected），
-     * 也没有 knob 可同步；这是唯一一处把"该显示哪个页面"和"currentPageId"
+     * 没连上 knob 时默认无视 currentPageId、强制显示"home"连接页（见
+     * bleConnected），除非用户在首页点了"跳过"（forceShowCarControl，见
+     * skipToCarControl）；这是唯一一处把"该显示哪个页面"和"currentPageId"
      * 分开决定的地方，其余地方（advanceStop/switchToPage）都只管业务意义上
-     * 停靠在哪个停靠点，不用关心蓝牙有没有连上。
+     * 停靠在哪个停靠点，不用关心蓝牙有没有连上。没连上时依然不会
+     * syncToKnob()——没有 knob 可同步。
      */
     private fun refreshCurrentPage() {
         val container = pageContainer ?: return
-        val pageId = if (bleConnected) currentPageId else "home"
+        val pageId = if (bleConnected || forceShowCarControl) currentPageId else "home"
         val builder = pages[pageId] ?: return
         container.removeAllViews()
         container.addView(builder(), ViewGroup.LayoutParams(
@@ -784,7 +798,28 @@ class MainPlugin : KnobPlugin {
             } else {
                 addView(Ui.hint(ctx, "正在扫描附近的蓝牙旋钮…"))
             }
+            addView(Ui.space(ctx, 0, 12))
+            addView(Ui.btn(ctx, "⏭️ 跳过，直接进车控") { skipToCarControl() })
         }
+    }
+
+    /**
+     * 首页"跳过"按钮：不管 BLE 连没连上，都直接进 currentPageId 停靠的
+     * 车控页面——CarControl/BYDAuto HAL 本身不依赖 BLE，触屏场景下用户
+     * 可能压根不关心旋钮连没连。只影响页面显示，不会假装 knob 已连接，
+     * refreshCurrentPage() 仍然靠真实的 bleConnected 决定要不要 syncToKnob()。
+     */
+    private fun skipToCarControl() {
+        host?.log("⏭️ 用户跳过蓝牙连接，直接进入车控页面")
+        forceShowCarControl = true
+        refreshCurrentPage()
+    }
+
+    /** 车控页"返回蓝牙页"按钮的另一半：撤销上面的跳过，退回首页。 */
+    private fun backToBluetoothPage() {
+        host?.log("👈 用户从车控页手动返回蓝牙页")
+        forceShowCarControl = false
+        refreshCurrentPage()
     }
 
     /**
@@ -868,6 +903,11 @@ class MainPlugin : KnobPlugin {
             }
             addView(Ui.space(ctx, 0, 12))
             addView(Ui.btn(ctx, "🔀 下一个") { advanceStop() })
+            // 只有真的没连 BLE、靠 forceShowCarControl 跳过来的情况下才需要
+            // 这个按钮——已经连上 knob 时没有"手动回蓝牙页"的必要。
+            if (!bleConnected) {
+                addView(Ui.btn(ctx, "📶 返回蓝牙页") { backToBluetoothPage() })
+            }
         }
     }
 
@@ -918,6 +958,9 @@ class MainPlugin : KnobPlugin {
             addView(buildSeatRow())
             addView(Ui.space(ctx, 0, 12))
             addView(Ui.btn(ctx, "🔀 下一个") { advanceStop() })
+            if (!bleConnected) {
+                addView(Ui.btn(ctx, "📶 返回蓝牙页") { backToBluetoothPage() })
+            }
         }
     }
 

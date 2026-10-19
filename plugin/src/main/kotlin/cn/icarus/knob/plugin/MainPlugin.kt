@@ -56,6 +56,10 @@ class MainPlugin : KnobPlugin {
         private const val SEAT_LEVEL_MIN = -2
         private const val SEAT_LEVEL_MAX = 2
 
+        // 联动提交时"设完双区温度 → 关分控"之间的延时，比亚迪建议加延时
+        // 但没给具体值，需实车验证调整。见 commitAc()。
+        private const val AC_LINK_MODE_DELAY_MS = 500L
+
         // 旋钮固件单击触发的键码（固件把单击/双击反过来分配了，见
         // firmware/src/ble.h 的说明），不对应真实 Android 按键，数值跟
         // 那边的 KEYCODE_CYCLE_SUB 对齐。
@@ -929,12 +933,19 @@ class MainPlugin : KnobPlugin {
         }
     }
 
+    // 联动提交里"延时后关分控"那一步，还没执行时再次提交要先取消，
+    // 否则它会晚到一步把新停靠点刚打开的分控又关掉。
+    private var pendingAcLinkMode: Runnable? = null
+
     /**
-     * 空调停靠点的提交：先无条件断言这个停靠点要求的分控状态，再下发
-     * 温度——不比较本地缓存是不是已经是这个状态（分控没有监听接口，缓存
-     * 可能因为语音/按键早就跟车况不一致了），每次提交都强制断言一次最
-     * 安全。顺序不能反：分控没真正切过去之前先写 area=MAIN/DEPUTY 的
-     * 温度大概率会被联动模式吞掉或不生效。
+     * 空调停靠点的提交。分控没有监听回调，所以每次提交都无条件断言一次
+     * 这个停靠点要求的分控状态，不比较本地缓存。
+     *
+     * 车机 setAcTemperature 会把分控重新打开（比亚迪确认是预期行为），
+     * 所以两条路顺序不同：
+     * - 分控：先开分控，再写 MAIN/DEPUTY 温度——调温本来就会保持分控开。
+     * - 联动：按比亚迪建议，先写 MAIN_DEPUTY 双区温度，延时
+     *   AC_LINK_MODE_DELAY_MS 后再关分控，否则关分控会被调温顶回去。
      */
     private fun commitAc(separate: Boolean, area: Int, value: Int) {
         if (SIMULATE_CAR_CONTROL) {
@@ -943,8 +954,21 @@ class MainPlugin : KnobPlugin {
         }
         val ctrl = carControl ?: return
         val context = appContext ?: return
-        ctrl.setAcTemperatureControlMode(context, separate)
+        pendingAcLinkMode?.let { mainHandler.removeCallbacks(it) }
+        pendingAcLinkMode = null
+        if (separate) {
+            ctrl.setAcTemperatureControlMode(context, true)
+            ctrl.setAcTemperature(context, area, value)
+            return
+        }
         ctrl.setAcTemperature(context, area, value)
+        val r = Runnable {
+            pendingAcLinkMode = null
+            ctrl.setAcTemperatureControlMode(context, false)
+            ctrl.getAcTemperatureControlMode(context)
+        }
+        pendingAcLinkMode = r
+        mainHandler.postDelayed(r, AC_LINK_MODE_DELAY_MS)
     }
 
     /** 座椅页：下一个停靠点循环回联动页 / 首页菜单（占位页面，还没接真实座椅加热状态）。 */

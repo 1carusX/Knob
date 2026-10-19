@@ -5,15 +5,18 @@ plugins {
 
 android {
     namespace = "cn.icarus.knob"
-    compileSdk = 34
+    // compileSdk / buildTools 与 plugin 共用，见仓库根目录 gradle/libs.versions.toml
+    compileSdk = libs.versions.compileSdk.get().toInt()
+    buildToolsVersion = libs.versions.buildTools.get()
 
     defaultConfig {
         // generic 变体用原包名；byd 变体加 .byd 后缀（见下方 productFlavors）
         applicationId = "cn.icarus.knob"
-        minSdk = 26
-        targetSdk = 34
-        versionCode = 4
-        versionName = "1.3"
+        // minSdk / targetSdk 同样来自仓库根目录 gradle/libs.versions.toml
+        minSdk = libs.versions.minSdk.get().toInt()
+        targetSdk = libs.versions.targetSdk.get().toInt()
+        versionCode = 5
+        versionName = "1.4"
     }
 
     // 按目标平台分两个变体：比亚迪车机（含 BYDAUTO 权限，见 src/byd/）vs

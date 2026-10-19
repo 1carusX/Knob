@@ -97,7 +97,7 @@ cd plugin && ./gradlew pluginDex
 cd plugin && ./gradlew pluginDexSimulate
 ```
 
-- 两个工程均为 Kotlin + JVM target 17，SDK 34（`minSdk 26`），Kotlin 2.1.10。
+- 两个工程均为 Kotlin + JVM target 17；compileSdk / minSdk / targetSdk / build-tools / Kotlin 版本统一在仓库根目录 `gradle/libs.versions.toml`，两个工程共用。
 - 插件编译依赖 `plugin/libs/bydauto-openapi.jar`（车机厂商官方车控 SDK，`compileOnly`，运行时由车机系统提供）与 `android.jar`；jar 已入库，克隆后无需额外放置。
 - 工程未配 `signingConfig`，`assembleRelease` 只产出 **unsigned** APK；装车前需用车机厂商签名单独签。
 - 命令行构建需先设 `JAVA_HOME`（本机无系统级 JDK，可用 Gradle 已 provision 的 `~/.gradle/jdks/jetbrains_s_r_o_-21-amd64-linux.2`）；Android Studio 内构建会自带 JBR。

@@ -1,0 +1,24 @@
+# Shared version catalog for both Gradle builds (app/ and plugin/).
+# Each build loads this file as its `libs` catalog in settings.gradle.kts,
+# so SDK/build-tools/Kotlin versions stay in sync between shell and plugin.
+
+[versions]
+agp = "9.3.2"
+kotlin = "2.4.10"
+appcompat = "1.8.0"
+# compileSdk for the app; the plugin compiles against the same android.jar.
+compileSdk = "34"
+# minSdk for the app; the plugin passes it to d8 as --min-api.
+minSdk = "26"
+# targetSdk for the app only (a dex has no manifest; the plugin inherits the shell's).
+targetSdk = "34"
+# build-tools for the app; the plugin runs d8 from the same version.
+buildTools = "36.0.0"
+
+[libraries]
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

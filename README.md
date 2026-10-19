@@ -58,7 +58,7 @@ flowchart LR
 # 壳 App → app/app/build/outputs/apk/release/app-release-unsigned.apk
 cd app && ./gradlew assembleRelease
 
-# 插件 → plugin/output/plugin.dex（依赖本机 ANDROID_HOME 的 android-34 + build-tools）
+# 插件 → plugin/output/plugin.dex（SDK 版本见根目录 gradle/libs.versions.toml，SDK 路径自动探测）
 cd plugin && ./gradlew pluginDex
 ```
 

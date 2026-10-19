@@ -1,19 +1,53 @@
+import java.util.Properties
+
 plugins {
     // Kotlin 2.1.10 起支持 JDK 25 及更新的版本（AS 的 JBR 25 可用）
-    // 版本号统一在 gradle/libs.versions.toml 管理
+    // 版本号统一在仓库根目录 gradle/libs.versions.toml 管理，与 app 共用
     alias(libs.plugins.kotlin.jvm)
 }
 
 group = "cn.icarus.knob"
 version = "1.0.0"
 
-// 编译依赖的 android.jar（仅编译用，不打进 dex）
-val androidJar = System.getenv("ANDROID_HOME")?.let { "$it/platforms/android-34/android.jar" }
-    ?: "/home/icarus/Android/Sdk/platforms/android-34/android.jar"
+// Android SDK 目录，按顺序找：本工程或 app 工程 local.properties 的 sdk.dir
+// （Android Studio 打开工程时自动写入）→ ANDROID_HOME → ANDROID_SDK_ROOT →
+// 各系统默认安装位置。不写死任何本机路径，换电脑不用改这个文件。
+val sdkDir: File = run {
+    val fromLocal = listOf(file("local.properties"), file("../app/local.properties"))
+        .filter { it.exists() }
+        .map { f ->
+            val props = Properties()
+            f.inputStream().use { props.load(it) }
+            props.getProperty("sdk.dir")
+        }
+    val home = System.getProperty("user.home")
+    val candidates = fromLocal.filterNotNull() + listOfNotNull(
+        System.getenv("ANDROID_HOME"),
+        System.getenv("ANDROID_SDK_ROOT"),
+        System.getenv("LOCALAPPDATA")?.let { "$it/Android/Sdk" },
+        "$home/Android/Sdk",
+        "$home/Library/Android/sdk",
+    )
+    candidates.map(::File).firstOrNull { it.isDirectory }
+        ?: throw GradleException("找不到 Android SDK，已尝试: $candidates。请在 local.properties 里写 sdk.dir=<SDK 路径> 或设置 ANDROID_HOME")
+}
 
-// d8 工具路径
-val d8Path = System.getenv("ANDROID_HOME")?.let { "$it/build-tools/36.1.0/d8" }
-    ?: "/home/icarus/Android/Sdk/build-tools/36.1.0/d8"
+// compileSdk / buildTools 版本与 app 共用（仓库根目录 gradle/libs.versions.toml）
+val compileSdk = libs.versions.compileSdk.get()
+// dex 没有 manifest，运行时沿用壳的 minSdk；d8 按同一个值做脱糖（--min-api）。
+val minSdk = libs.versions.minSdk.get()
+val buildTools = libs.versions.buildTools.get()
+
+// 编译依赖的 android.jar（仅编译用，不打进 dex）
+val androidJar = File(sdkDir, "platforms/android-$compileSdk/android.jar").also {
+    if (!it.exists()) throw GradleException("缺少 $it，请用 SDK Manager 安装 API $compileSdk 的 SDK Platform")
+}.absolutePath
+
+// d8 工具路径（Windows 下是 d8.bat）
+val d8Path = File(sdkDir, "build-tools/$buildTools/" +
+    if (System.getProperty("os.name").startsWith("Windows")) "d8.bat" else "d8").also {
+    if (!it.exists()) throw GradleException("缺少 $it，请用 SDK Manager 安装 Build-Tools $buildTools")
+}.absolutePath
 
 // 两份构建变体，共用 src/main/kotlin 里的全部插件代码，只有
 // SIMULATE_CAR_CONTROL 这一个值不一样（各自一份 BuildFlags.kt，见
@@ -81,6 +115,7 @@ fun runD8(jarFile: File, finalOutDir: File, dexFileName: String) {
         d8.absolutePath,
         "--output", tmpDir.absolutePath,
         "--lib", androidJar,
+        "--min-api", minSdk,
         jarFile.absolutePath
     )
     // d8 是 shell 脚本，靠 JAVA_HOME/PATH 找 java。

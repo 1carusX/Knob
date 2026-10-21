@@ -30,10 +30,14 @@
                       // 不会把它拉高，芯片内部下拉能保持住，不影响启动）
 #define TFT_BLK  -1   // 自制板的屏幕插座只有 7 针，背光没接到主控（屏幕模块内部常亮），
                       // -1 = 没接，display.cpp 会跳过所有背光/调亮度操作
+#define TFT_ROTATION 2  // 自制板上屏幕装配方向跟开发板差 180 度，转 2 档（2×90°）补回来
 #else // BOARD_DEVKIT
 #define TFT_DC   14   // 数据/命令选择
 #define TFT_BLK  13   // 背光，PWM 调亮度
+#define TFT_ROTATION 0
 #endif
+// TFT_ROTATION 取 0~3，每档 90 度，交给 GFX 库设屏幕控制器的扫描方向
+// （硬件转，LVGL 不用管），要跟屏幕物理装配方向匹配画面才是正的。
 
 #define CONFIG_SCREEN_HOR_RES 240  // 屏幕宽度（像素）
 #define CONFIG_SCREEN_VER_RES 240  // 屏幕高度（像素）

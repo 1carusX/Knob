@@ -1,7 +1,7 @@
 // 独立 BLE 测试固件：验证 ESP32-S3 能不能被手机/车机配对连接，配对
 // 加密建立后按键事件通知和显示同步写入两条自定义特征值能不能正常工作。
 // 不依赖屏幕、不依赖编码器。
-// 编译烧录：pio run -e test_ble -t upload -t monitor
+// 编译烧录：pio run -e test_ble_pcb（开发板用 test_ble_devkit）-t upload -t monitor
 //
 // 用法：烧录后用 nRF Connect 连上 "Knob-XXXX"（后 4 位是该板子蓝牙 MAC
 // 的后 2 字节，每块板子不一样），配对方式是 Passkey（数字比对）：ESP32

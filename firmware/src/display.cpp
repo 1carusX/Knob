@@ -36,8 +36,11 @@ void display_init() {
     // 背光走 PWM（Arduino-ESP32 3.x 按引脚操作的新 ledc API），不是简单
     // 拉高——手机端插件会根据车机光照传感器算出目标亮度推过来（见
     // display_set_brightness），默认先给满亮度。
-    ledcAttach(TFT_BLK, BL_PWM_FREQ_HZ, BL_PWM_RESOLUTION_BITS);
-    display_set_brightness(100);
+    // TFT_BLK 为 -1 表示背光没接到主控（见 config.h），整段跳过。
+    if (TFT_BLK >= 0) {
+        ledcAttach(TFT_BLK, BL_PWM_FREQ_HZ, BL_PWM_RESOLUTION_BITS);
+        display_set_brightness(100);
+    }
 
     // 2) 初始化 LVGL，并告诉它怎么找到刚才点亮的这块屏幕。
     lv_init();
@@ -59,6 +62,7 @@ void display_task_handler() {
 }
 
 void display_set_brightness(uint8_t percent) {
+    if (TFT_BLK < 0) return; // 背光没接到主控，调不了亮度
     if (percent > 100) percent = 100;
     uint8_t duty = (uint8_t)((uint16_t)percent * 255 / 100);
     ledcWrite(TFT_BLK, duty);

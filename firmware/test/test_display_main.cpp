@@ -2,7 +2,7 @@
 // 顺带验证背光 PWM 调光这条链路（呼吸灯效果，亮度应该平滑忽明忽暗）。
 // 不依赖 LVGL、不依赖编码器——接线只按 docs/旋钮-最小硬件调试方案.md
 // 第 2.1 节接屏幕那几根线即可。
-// 编译烧录：pio run -e test_display -t upload -t monitor
+// 编译烧录：pio run -e test_display_pcb（开发板用 test_display_devkit）-t upload -t monitor
 
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
@@ -40,8 +40,11 @@ void setup() {
 
     // Arduino-ESP32 3.x 的新 ledc API，直接按引脚操作，不用像旧版那样
     // 先 ledcSetup(channel,...) 再 ledcAttachPin(pin, channel)。
-    ledcAttach(TFT_BLK, BL_PWM_FREQ_HZ, BL_PWM_RESOLUTION_BITS);
-    ledcWrite(TFT_BLK, s_brightness);
+    // TFT_BLK 为 -1 表示背光没接到主控（见 config.h），跳过调光测试。
+    if (TFT_BLK >= 0) {
+        ledcAttach(TFT_BLK, BL_PWM_FREQ_HZ, BL_PWM_RESOLUTION_BITS);
+        ledcWrite(TFT_BLK, s_brightness);
+    }
 
     Serial.println("[TestDisplay] screen init done, cycling colors + brightness");
 }
@@ -63,6 +66,7 @@ static void updateColor() {
 }
 
 static void updateBrightness() {
+    if (TFT_BLK < 0) return;
     uint32_t now = millis();
     if (now - s_last_brightness_step_ms < BRIGHTNESS_STEP_INTERVAL_MS) return;
     s_last_brightness_step_ms = now;

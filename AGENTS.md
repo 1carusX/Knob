@@ -50,11 +50,22 @@
 | 文件 | 职责 |
 |------|------|
 | `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域路由 + 自管页面栈 |
-| `src/main/kotlin/cn/icarus/knob/plugin/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道（自定义 GATT，不是标准 HID）：认哪个设备、扫描/配对、断线重连轮询、按键 NOTIFY 解码、显示数据 WRITE 编码，全部归插件自己管，不经壳。生命周期绑定插件实例——重新导入 `plugin.dex` 会连带断开当前 BLE 连接（`MainPlugin` 通过 `onKeyEvent`/`onConnectionStateChanged`/`onCandidateFound` 三个回调属性接收事件，不是接口方法） |
+| `src/main/kotlin/cn/icarus/knob/plugin/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道（自定义 GATT，不是标准 HID）：认哪个设备、扫描/配对、断线重连轮询、按键 NOTIFY 解码、显示数据 WRITE 编码，全部归插件自己管，不经壳。还负责读旋钮固件版本（标准 0x180A 服务）和固件 OTA 发送。生命周期绑定插件实例——重新导入 `plugin.dex` 会连带断开当前 BLE 连接（`MainPlugin` 通过 `onKeyEvent`/`onConnectionStateChanged`/`onCandidateFound`/`onFirmwareInfo`/`onOtaProgress`/`onOtaResult` 等回调属性接收事件，不是接口方法） |
+| `src/main/kotlin/cn/icarus/knob/plugin/FirmwareBundle.kt` | 从壳存下的插件包（zip）里读出 `firmware/firmware.bin` 并按 `manifest.json` 校验大小和 SHA-256；`MainPlugin.maybeStartOta` 据此决定要不要自动升级旋钮 |
 | `src/main/kotlin/cn/icarus/knob/plugin/CarControl.kt` | 车控引擎：BYDAUTO 设备初始化 / 空调（温度·开关·风量·风向·循环·分控）/ 座椅通风·加热 / 环境光传感器读取 |
 | `src/main/kotlin/cn/icarus/knob/plugin/PluginSelfTest.kt` | 一键全量自检 |
 | `src/main/kotlin/cn/icarus/knob/api/` | 与壳 `api/` 逐字节相同的三个契约文件（KnobPlugin / KnobHost / Ui） |
 | `src/main/flags-real/…/BuildFlags.kt`、`src/main/flags-simulate/…/BuildFlags.kt` | 同路径两份文件，只有 `SIMULATE_CAR_CONTROL` 值不同，分别参与 `main`/`simulate` source set 编译（见 §6） |
+
+### 固件 `firmware/`（PlatformIO，ESP32-S3）
+
+| 文件 | 职责 |
+|------|------|
+| `include/config.h` | 引脚与板子配置（`BOARD_PCB` / `BOARD_DEVKIT`，由 `platformio.ini` 的 env 定义）、板子名 `BOARD_NAME` |
+| `src/ble.cpp` | 自定义 GATT（按键事件 / 显示同步 / OTA 三个特征值）+ 设备信息服务（固件版本 0x2A26、板子名 0x2A27）；OTA 协议见文件内 OTA 一节和 `docs/项目历程与架构.md` §四 |
+| `src/main.cpp` | LVGL 界面、编码器交互、各状态画面（含"固件升级"进度画面，OTA 完成后到点重启） |
+| `VERSION` / `scripts/version.py` | 人工维护的版本号 + 编译时拼上 git 信息生成 `FW_VERSION`（`0.1.0+<提交>[.dirty.<改动指纹>]`），代码一变版本号就变 |
+| `src/fonts/` | LVGL 字体（中文 `font_zh_36` 只收录用到的字，新增上屏中文要重新生成） |
 
 > 新增车控功能 = 只改插件（`CarControl.kt` 加方法 + `MainPlugin.kt` 加一条 `when` 分支）+ 重新 `pluginDex`，**壳不用动、不用重签**。
 
@@ -95,6 +106,14 @@ cd plugin && ./gradlew pluginDex
 
 # 插件（本地模拟，不碰真实车控接口）：同样流程 → plugin/output/plugin-simulate.dex
 cd plugin && ./gradlew pluginDexSimulate
+
+# 插件包（插件 + 旋钮固件打成一个 zip，日常分发用这个）：自动先编固件（pio run -e <板子>）再打包
+# → plugin/output/knob-plugin-<板子>-<固件版本>.zip；模拟版是 pluginPackageSimulate → knob-plugin-simulate-…
+# 板子默认 pcb，开发板加 -PknobBoard=devkit；找不到 pio 时用 -Ppio=<路径> 指定
+cd plugin && ./gradlew pluginPackage
+
+# 固件 USB 刷写（只在旋钮固件还不支持 OTA、或新固件起不来时需要）
+cd firmware && pio run -e pcb -t upload
 ```
 
 - 两个工程均为 Kotlin + JVM target 17；compileSdk / minSdk / targetSdk / build-tools / Kotlin 版本统一在仓库根目录 `gradle/libs.versions.toml`，两个工程共用。
@@ -107,10 +126,14 @@ cd plugin && ./gradlew pluginDexSimulate
 
 **不走外部存储路径**（避免 Android 11+ 的分区存储限制，也不需要存储权限）：
 
-1. 编译出 `plugin/output/plugin.dex`，拷到 U 盘/车机任意可见位置。
-2. 壳里点「📥 选择插件」→ SAF 文件选择器选中 dex。
+1. 编译出插件包 `plugin/output/knob-plugin-<板子>-<版本>.zip`（或纯 `plugin.dex`，那样就不带固件、不会升级旋钮），拷到 U 盘/车机任意可见位置。
+2. 壳里点「📥 选择插件」→ SAF 文件选择器选中它。
 3. `PluginLoader.importDex()` 先删旧文件（旧的是只读的，不删无法覆盖）→ 拷进私有目录 `filesDir/knob/plugin.dex` → `setReadOnly()`（W^X 要求）→ `DexClassLoader` 加载（parent = 壳 classLoader）、实例化 `cn.icarus.knob.plugin.MainPlugin`、调 `init`，随后 Activity 发 `ui.bind` 交出容器。
 4. 之后每次启动由 `KnobApp` 自动从私有目录加载，无需再选。更新插件 = 重复步骤 1-2 覆盖。
+
+**插件包是 zip 但壳不知道**：壳照样把它存成 `plugin.dex`，ART 按文件头认出 zip、加载里面的 `classes.dex`；插件自己用 `ZipFile` 按路径打开同一个文件读 `firmware/` 下的固件和 manifest（`FirmwareBundle.kt`）。所以打包方式变了壳也不用改、不用重签。
+
+**旋钮固件自动 OTA**：插件连上旋钮读到固件版本和板子名，跟包里的固件比：板子一致、版本不同、旋钮支持 OTA 就直接开始升级（不弹确认，升降级都会触发），约 80 秒，完成后旋钮重启、插件自动重连。同一个目标版本最多自动试 2 次，重新导入插件包清零。暂不支持回滚。
 
 ### 进程生命周期
 
@@ -140,4 +163,6 @@ cd plugin && ./gradlew pluginDexSimulate
 | 问题 | 位置 | 说明 |
 |------|------|------|
 | `api/` 三个类被打进 dex | `plugin/build.gradle.kts` 的 `pluginJar` | 双亲委派下运行时实际用壳的类，暂不致命；若将来把 parent 改成 null 会 `ClassCastException` |
+| OTA 没有回滚 | `firmware/src/ble.cpp`、`MainPlugin.maybeStartOta` | 新固件能启动、能连蓝牙但有 bug 时，导入带旧固件的插件包降级；起不来或连不上蓝牙只能 USB 刷 |
+| OTA 已在手机验证，车机（Android 12）未验证 | `docs/验证结论.md` 固件 OTA 一节 | zip 插件包加载、开机自动加载、OTA 都待车机实测 |
 | `generic` 变体误配真实 `plugin.dex` 时崩溃无提示 | `plugin/.../CarControl.kt` 的 `bydauto.*` 硬依赖 | 表现是 `NoClassDefFoundError`，日志不会直接说明原因是插件变体配错了；已知问题，暂不加运行时检测（见 §2 对应约束行） |

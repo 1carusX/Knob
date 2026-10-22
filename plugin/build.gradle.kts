@@ -1,4 +1,7 @@
+import java.security.MessageDigest
 import java.util.Properties
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 plugins {
     // Kotlin 2.1.10 起支持 JDK 25 及更新的版本（AS 的 JBR 25 可用）
@@ -185,4 +188,95 @@ tasks.register("pluginDexAll") {
     group = "knob"
     description = "一次构建出 plugin.dex（真实车控）和 plugin-simulate.dex（本地模拟）"
     dependsOn("pluginDex", "pluginDexSimulate")
+}
+
+// ==================== 插件 + 固件打成一个 zip（给旋钮 OTA 用） ====================
+//
+// 壳的「选择插件」导入后原样存成 filesDir/knob/plugin.dex，ART 按文件头认出
+// zip、照样加载里面的 classes.dex；插件再自己用 ZipFile 读 firmware/ 下的
+// 固件，连上旋钮后版本不一致就 OTA。zip 结构：
+//   classes.dex              插件本体（d8 原样产物）
+//   firmware/firmware.bin    PlatformIO 编出的固件，原样不动
+//   firmware/manifest.json   {"version","board","size","sha256"}
+// 产物：output/knob-plugin[-simulate]-<板子>-<固件版本>.zip
+//
+// 打包前先调 PlatformIO 编一遍固件，保证带的是当前代码。参数：
+//   -PknobBoard=pcb|devkit   给哪块板子编固件（默认 pcb）
+//   -Ppio=<路径>              pio 可执行文件（默认先找 PATH，再找 ~/.platformio/penv）
+
+val knobBoard: String = (findProperty("knobBoard") as String?) ?: "pcb"
+
+// 只在打包任务真正执行时才找 pio，没装 PlatformIO 的机器照样能跑 pluginDex。
+fun findPio(): File {
+    (findProperty("pio") as String?)?.let { return File(it) }
+    val windows = System.getProperty("os.name").startsWith("Windows")
+    val names = if (windows) listOf("pio.exe", "platformio.exe") else listOf("pio", "platformio")
+    val onPath = System.getenv("PATH").orEmpty().split(File.pathSeparator)
+        .flatMap { dir -> names.map { File(dir, it) } }
+    val home = System.getProperty("user.home")
+    val penv = names.map { File("$home/.platformio/penv/" + (if (windows) "Scripts/" else "bin/") + it) }
+    return (onPath + penv).firstOrNull { it.isFile && it.canExecute() }
+        ?: throw GradleException("找不到 PlatformIO（pio），已尝试 PATH 和 ~/.platformio/penv。可用 -Ppio=<路径> 指定")
+}
+
+fun buildFirmware(board: String): File {
+    if (board !in listOf("pcb", "devkit")) {
+        throw GradleException("knobBoard 只能是 pcb 或 devkit，当前是 $board")
+    }
+    val firmwareDir = file("../firmware")
+    val pb = ProcessBuilder(findPio().absolutePath, "run", "-e", board).directory(firmwareDir)
+    pb.redirectErrorStream(true)
+    val process = pb.start()
+    val output = process.inputStream.readBytes().toString(Charsets.UTF_8)
+    if (process.waitFor() != 0) {
+        throw GradleException("固件编译失败（pio run -e $board）:\n$output")
+    }
+    return File(firmwareDir, ".pio/build/$board")
+}
+
+fun packagePlugin(dexFile: File, zipName: String, board: String) {
+    val fwBuildDir = buildFirmware(board)
+    val bin = File(fwBuildDir, "firmware.bin")
+    val version = File(fwBuildDir, "fw_version.txt").readText().trim()
+    val binBytes = bin.readBytes()
+    val sha256 = MessageDigest.getInstance("SHA-256").digest(binBytes)
+        .joinToString("") { "%02x".format(it) }
+    val manifest = """{"version":"$version","board":"$board","size":${binBytes.size},"sha256":"$sha256"}"""
+
+    val outDir = file("output")
+    // 文件名带板子和版本号（两块板子的固件版本号一样，不带板子会互相覆盖、
+    // 拷 U 盘时也分不清）。同一变体、同一板子的旧包先删掉，免得越堆越多拷错包；
+    // 板子名后面必须紧跟版本号数字，不然 knob-plugin 会误删 knob-plugin-simulate-*。
+    val prefix = "$zipName-$board-"
+    val oldPackage = Regex("^${Regex.escape(prefix)}\\d.*\\.zip$")
+    outDir.listFiles { f -> oldPackage.matches(f.name) }?.forEach { it.delete() }
+    val zipFile = File(outDir, "$prefix$version.zip")
+    val entries = listOf(
+        "classes.dex" to dexFile.readBytes(),
+        "firmware/firmware.bin" to binBytes,
+        "firmware/manifest.json" to manifest.toByteArray(),
+    )
+    ZipOutputStream(zipFile.outputStream()).use { out ->
+        for ((name, bytes) in entries) {
+            out.putNextEntry(ZipEntry(name))
+            out.write(bytes)
+            out.closeEntry()
+        }
+    }
+    println("✅ ${zipFile.name} 生成: ${zipFile.absolutePath}")
+    println("   固件 $version（$board），${binBytes.size} 字节，sha256=$sha256")
+}
+
+tasks.register("pluginPackage") {
+    group = "knob"
+    description = "插件（真实车控）+ 固件打成 knob-plugin-<板子>-<固件版本>.zip"
+    dependsOn("pluginDex")
+    doLast { packagePlugin(file("output/plugin.dex"), "knob-plugin", knobBoard) }
+}
+
+tasks.register("pluginPackageSimulate") {
+    group = "knob"
+    description = "插件（本地模拟）+ 固件打成 knob-plugin-simulate-<板子>-<固件版本>.zip"
+    dependsOn("pluginDexSimulate")
+    doLast { packagePlugin(file("output/plugin-simulate.dex"), "knob-plugin-simulate", knobBoard) }
 }

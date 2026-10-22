@@ -45,6 +45,12 @@ class MainPlugin : KnobPlugin {
         private const val KEY_SEAT_LEVEL_REAR_RIGHT = "seat_level_rear_right"
         private const val KEY_CURRENT_SEAT_INDEX = "current_seat_index"
         private const val KEY_AC_SPLIT_SHOWING_MAIN = "ac_split_showing_main"
+        // 自动 OTA 的目标版本和已尝试次数（防死循环，见 maybeStartOta）
+        private const val KEY_OTA_TARGET = "ota_target"
+        private const val KEY_OTA_ATTEMPTS = "ota_attempts"
+        // 上次见到的插件包文件修改时间，用来认出"刚导入了插件包"（见 resetOtaAttemptsIfNewPackage）
+        private const val KEY_OTA_PACKAGE_STAMP = "ota_package_stamp"
+        private const val MAX_OTA_ATTEMPTS = 2
 
         // 座椅 5 档：-2/-1=通风2/1档，0=关闭，1/2=加热1/2档。负数=通风、
         // 正数=加热，这样触屏 ±/knob 屏幕的"居中对称"圆弧
@@ -179,6 +185,19 @@ class MainPlugin : KnobPlugin {
     // 在首页点按钮决定，见 buildHomePage()。
     private var candidateName: String? = null
 
+    // 当前连着的旋钮上报的固件版本号和板子名称（BleManager.onFirmwareInfo）；
+    // 断开就清空，下次连上重新读。null = 没连上或者读不到（旧固件）。
+    private var knobFirmwareVersion: String? = null
+    private var knobBoard: String? = null
+
+    // 插件包里带的固件（见 FirmwareBundle），init 时读一次；null = 导入的是纯
+    // .dex 或者包有问题，不会给旋钮升级。
+    private var firmwareBundle: FirmwareBundle? = null
+
+    // 正在给旋钮升级时的进度（0~100），null = 没在升级。非 null 时页面固定
+    // 显示升级页（见 refreshCurrentPage），BleManager 也会丢弃显示同步。
+    private var otaPercent: Int? = null
+
     private fun isAcStop(pageId: String) = pageId == "ac_link" || pageId == "ac_split"
 
     // AC/Sensor 监听器的回调不在主线程上（AIDL 回调线程），这两个处理
@@ -199,8 +218,13 @@ class MainPlugin : KnobPlugin {
             it.onKeyEvent = ::handleKey
             it.onConnectionStateChanged = ::handleBleConnectionChanged
             it.onCandidateFound = ::handleBleCandidateFound
+            it.onFirmwareInfo = ::handleKnobFirmwareInfo
+            it.onOtaProgress = ::handleOtaProgress
+            it.onOtaResult = ::handleOtaResult
         }
         host.log("✅ 插件初始化完成（车控引擎已就绪）")
+        firmwareBundle = FirmwareBundle.load(context, host)
+        resetOtaAttemptsIfNewPackage(context)
         restoreState()
         syncToKnob()
         // BLE 连接现在整个归插件自己管（见 BleManager），壳不再插手认哪个
@@ -507,10 +531,117 @@ class MainPlugin : KnobPlugin {
     private fun handleBleConnectionChanged(connected: Boolean, name: String?, mac: String?) {
         carControl?.log("📡 蓝牙状态: ${if (connected) "已连接" else "断开"} name=$name mac=$mac")
         bleConnected = connected
+        if (!connected) {
+            knobFirmwareVersion = null
+            knobBoard = null
+        }
         // 真的连上了，forceShowCarControl 这个手动越门标记就没意义了——
         // 清掉避免下次断线时凭空继续生效，逼用户重新决定要不要再跳过。
         if (connected) forceShowCarControl = false
         refreshCurrentPage()
+    }
+
+    /**
+     * BleManager.onFirmwareInfo 回调：记下旋钮的固件版本和板子名称，跟插件包
+     * 里带的固件不一致就开始升级（见 maybeStartOta）。紧接着会有一次
+     * onConnectionStateChanged(connected=true)，那里会重绘页面，这里不用自己刷新。
+     */
+    private fun handleKnobFirmwareInfo(version: String?, board: String?, otaSupported: Boolean) {
+        host?.log("🏷️ 旋钮固件: ${version ?: "未知（固件太旧）"}，板子: ${board ?: "未知"}")
+        knobFirmwareVersion = version
+        knobBoard = board
+        maybeStartOta(version, board, otaSupported)
+    }
+
+    /**
+     * 手动导入插件包 = 用户想再试一次，把 [maybeStartOta] 的尝试次数清零。
+     * init 分不出是刚导入还是开机自动加载，靠插件包文件的修改时间区分：壳每次
+     * 导入都删掉旧文件重新拷，时间必然变；开机重新加载的还是同一个文件，不变。
+     */
+    private fun resetOtaAttemptsIfNewPackage(context: Context) {
+        val stamp = FirmwareBundle.pluginFile(context).lastModified()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (prefs.getLong(KEY_OTA_PACKAGE_STAMP, 0L) == stamp) return
+        prefs.edit().putLong(KEY_OTA_PACKAGE_STAMP, stamp).remove(KEY_OTA_TARGET).remove(KEY_OTA_ATTEMPTS).apply()
+    }
+
+    /**
+     * 连上旋钮、读到版本后决定要不要升级：插件包带了固件、板子对得上、版本
+     * 不一样、旋钮支持 OTA，四条都满足才开始，不弹确认。
+     *
+     * 防死循环：要是新固件上报的版本跟包里写的不一样（比如版本号生成出了
+     * 问题），每次连上都会再升一遍。所以按"目标版本"记尝试次数，同一个
+     * 目标最多试 [MAX_OTA_ATTEMPTS] 次，旋钮版本终于对上了、或者重新导入了
+     * 插件包（见 [resetOtaAttemptsIfNewPackage]）才清零。
+     */
+    private fun maybeStartOta(version: String?, board: String?, otaSupported: Boolean) {
+        val bundle = firmwareBundle ?: return
+        val ctx = appContext ?: return
+        val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        when {
+            version == bundle.version -> {
+                host?.log("✅ 旋钮固件已是插件包里的版本，不用升级")
+                prefs.edit().remove(KEY_OTA_TARGET).remove(KEY_OTA_ATTEMPTS).apply()
+                return
+            }
+            board != bundle.board -> {
+                host?.log("⚠️ 插件包里的固件是给 ${bundle.board} 编的，旋钮是 ${board ?: "未知板子"}，不升级")
+                return
+            }
+            !otaSupported -> {
+                host?.log("⚠️ 旋钮固件不支持 OTA，需要先用 USB 刷一次新固件")
+                return
+            }
+        }
+        val attempts = if (prefs.getString(KEY_OTA_TARGET, null) == bundle.version) prefs.getInt(KEY_OTA_ATTEMPTS, 0) else 0
+        if (attempts >= MAX_OTA_ATTEMPTS) {
+            host?.log("⚠️ 升级到 ${bundle.version} 已经试过 $attempts 次，旋钮版本仍是 $version，不再自动升级（检查固件版本号是否生成正确，或重新导入插件包）")
+            return
+        }
+        prefs.edit().putString(KEY_OTA_TARGET, bundle.version).putInt(KEY_OTA_ATTEMPTS, attempts + 1).apply()
+        host?.log("⬆️ 旋钮固件 $version → ${bundle.version}，开始升级（第 ${attempts + 1} 次）")
+        if (bleManager?.startOta(bundle.bytes, bundle.sha256) == true) {
+            otaPercent = 0
+            refreshCurrentPage()
+        }
+    }
+
+    /** BleManager.onOtaProgress 回调：只在百分比变了时才会来，直接重绘。 */
+    private fun handleOtaProgress(sent: Int, total: Int) {
+        otaPercent = (sent.toLong() * 100 / total).toInt()
+        refreshCurrentPage()
+    }
+
+    /**
+     * BleManager.onOtaResult 回调。成功后旋钮马上重启、断开，BleManager 会自动
+     * 重连，重连读到新版本时 maybeStartOta 确认版本一致并清掉尝试次数。
+     */
+    private fun handleOtaResult(success: Boolean, message: String) {
+        host?.log(if (success) "✅ 旋钮固件升级完成：$message" else "❌ 旋钮固件升级失败：$message")
+        otaPercent = null
+        refreshCurrentPage()
+    }
+
+    /** 车控页底部那一行旋钮固件信息，只在连着旋钮时显示。 */
+    private fun firmwareInfoHint(ctx: Context): View {
+        val knob = "旋钮固件 ${knobFirmwareVersion ?: "未知（固件太旧）"}（${knobBoard ?: "未知板子"}）"
+        val bundled = firmwareBundle?.let { "\n插件包内置 ${it.version}（${it.board}）" } ?: ""
+        return Ui.hint(ctx, knob + bundled)
+    }
+
+    /** 升级中固定显示这一页，没有按钮——升级期间不能操作，也不该切走。 */
+    private fun buildOtaPage(): View {
+        val ctx = appContext!!
+        return Ui.vStack(ctx).apply {
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#FFFFFF"))
+            addView(Ui.title(ctx, "⬆️ 正在升级旋钮固件"))
+            addView(Ui.space(ctx, 0, 12))
+            addView(Ui.text(ctx, "${otaPercent ?: 0}%", size = 40f, bold = true))
+            addView(Ui.space(ctx, 0, 12))
+            addView(Ui.hint(ctx, "${knobFirmwareVersion ?: "未知"} → ${firmwareBundle?.version ?: "未知"}"))
+            addView(Ui.hint(ctx, "升级期间旋钮暂时不能用，完成后会自动重启"))
+        }
     }
 
     /** BleManager.onCandidateFound 回调：让首页显示出这个候选，等用户点确认配对。 */
@@ -762,7 +893,7 @@ class MainPlugin : KnobPlugin {
     private fun refreshCurrentPage() {
         val container = pageContainer ?: return
         val pageId = if (bleConnected || forceShowCarControl) currentPageId else "home"
-        val builder = pages[pageId] ?: return
+        val builder: () -> View = if (otaPercent != null) ::buildOtaPage else pages[pageId] ?: return
         container.removeAllViews()
         container.addView(builder(), ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -911,6 +1042,9 @@ class MainPlugin : KnobPlugin {
             // 这个按钮——已经连上 knob 时没有"手动回蓝牙页"的必要。
             if (!bleConnected) {
                 addView(Ui.btn(ctx, "📶 返回蓝牙页") { backToBluetoothPage() })
+            } else {
+                addView(Ui.space(ctx, 0, 8))
+                addView(firmwareInfoHint(ctx))
             }
         }
     }
@@ -984,6 +1118,9 @@ class MainPlugin : KnobPlugin {
             addView(Ui.btn(ctx, "🔀 下一个") { advanceStop() })
             if (!bleConnected) {
                 addView(Ui.btn(ctx, "📶 返回蓝牙页") { backToBluetoothPage() })
+            } else {
+                addView(Ui.space(ctx, 0, 8))
+                addView(firmwareInfoHint(ctx))
             }
         }
     }

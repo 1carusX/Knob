@@ -3,15 +3,22 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
+#include <Update.h>
 #include <esp_mac.h>
+#include <mbedtls/sha256.h>
 #include <string.h>
 
-// 自定义服务下两个特征值：
-//   kKeyEventCharUUID   NOTIFY  knob -> 手机，旋钮动作事件
-//   kDisplayCharUUID    WRITE   手机 -> knob，同步显示数据（通用键值对）给屏幕
+#include "config.h"
+#include "fw_version_gen.h"
+
+// 自定义服务下三个特征值：
+//   kKeyEventCharUUID   NOTIFY        knob -> 手机，旋钮动作事件
+//   kDisplayCharUUID    WRITE         手机 -> knob，同步显示数据（通用键值对）给屏幕
+//   kOtaCharUUID        WRITE+NOTIFY  手机 -> knob 推新固件，knob 用通知回报结果（协议见下方 OTA 一节）
 static const char *kServiceUUID = "29afa70d-2312-4f04-9b36-fe9298284756";
 static const char *kKeyEventCharUUID = "182f303d-ea98-4ee4-839e-5599aaf3f29d";
 static const char *kDisplayCharUUID = "5f774e59-5079-4e69-8e5d-de0ee1220d3f";
+static const char *kOtaCharUUID = "468889d4-9176-4aa2-9a9e-cd7dd3ab1ae0";
 
 // 标准 HID Report Map（键盘 boot descriptor），仅用于让下面挂的那个标准
 // HID 服务（0x1812）看起来是个结构完整的 HID 设备——真正的按键数据完全
@@ -182,6 +189,172 @@ class DisplayUpdateCallbacks : public NimBLECharacteristicCallbacks {
 };
 static DisplayUpdateCallbacks s_display_update_callbacks;
 
+// ==================== 固件 OTA ====================
+//
+// 手机往 kOtaCharUUID 写的每一包第 1 个字节是操作码，多字节整数一律小端：
+//   0x01 BEGIN  + size(4) + sha256(32)  准备接收 size 字节的固件
+//   0x02 DATA   + offset(4) + 数据       offset 必须正好等于已收字节数，不接受乱序/重传
+//   0x03 END                             收齐了：校验 SHA-256，通过才切换启动分区
+//   0x04 ABORT                           放弃，当前固件不受影响
+// 用带应答的写（WRITE_TYPE_DEFAULT）：手机收到上一包的写回执才发下一包，
+// 回执在 onWrite() 返回之后才发，onWrite 里把数据写进 flash 就天然起到
+// 流控作用，不用另做窗口/确认。
+//
+// knob 用同一个特征值的通知回报结果：status(1) + 已收字节数(4)。只在
+// BEGIN 成功、END 成功、任何一步出错时发——DATA 正常写入不发通知（写
+// 回执已经说明收到了），手机收到错误通知就停止发送。
+enum : uint8_t {
+    OTA_OP_BEGIN = 0x01,
+    OTA_OP_DATA = 0x02,
+    OTA_OP_END = 0x03,
+    OTA_OP_ABORT = 0x04,
+};
+enum : uint8_t {
+    OTA_STATUS_READY = 0x00,        // BEGIN 成功，可以开始发 DATA
+    OTA_STATUS_DONE = 0x01,         // END 校验通过、已切换启动分区，马上重启
+    OTA_STATUS_ERR_BEGIN = 0x80,    // Update.begin() 失败（比如固件比分区还大）
+    OTA_STATUS_ERR_SEQUENCE = 0x81, // 没 BEGIN 就发 DATA/END，或者 offset 对不上
+    OTA_STATUS_ERR_WRITE = 0x82,    // 写 flash 失败
+    OTA_STATUS_ERR_VERIFY = 0x83,   // 收齐了，但 SHA-256 / 字节数对不上
+    OTA_STATUS_ERR_END = 0x84,      // Update.end() 失败（固件镜像格式不对等）
+    OTA_STATUS_ERR_FORMAT = 0x85,   // 包太短 / 操作码不认识
+};
+
+static NimBLECharacteristic *s_ota_char = nullptr;
+static void (*s_ota_cb)(OtaEvent event, uint32_t received, uint32_t total) = nullptr;
+// 收到 BEGIN 之后这么久没再收到数据就自己放弃：手机那边出错没来得及发 ABORT
+// 时（比如插件被重新导入），连接还在、不会触发断线放弃，屏幕会一直停在升级画面
+static const uint32_t OTA_IDLE_TIMEOUT_MS = 20000;
+
+// 只在 NimBLE 任务里碰（onWrite / onDisconnect 都在这个任务上串行执行）。
+static bool s_ota_active = false;
+static uint32_t s_ota_size = 0;
+static uint32_t s_ota_received = 0;
+static volatile uint32_t s_ota_last_ms = 0; // 最近一次收到 BEGIN/DATA 的时间，见 ble_ota_check_timeout
+static uint8_t s_ota_expected_sha[32];
+static mbedtls_sha256_context s_ota_sha;
+
+static uint32_t read_u32_le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void ota_notify(uint8_t status) {
+    if (s_ota_char == nullptr) return;
+    uint8_t payload[5] = {
+        status,
+        (uint8_t)(s_ota_received & 0xFF),
+        (uint8_t)((s_ota_received >> 8) & 0xFF),
+        (uint8_t)((s_ota_received >> 16) & 0xFF),
+        (uint8_t)((s_ota_received >> 24) & 0xFF),
+    };
+    s_ota_char->notify(payload, sizeof(payload));
+}
+
+// 放弃当前这次 OTA（没在进行就什么都不做）：丢掉已写进另一个分区的内容，
+// 当前在跑的固件和启动分区都不动。
+static void ota_abort(const char *reason) {
+    if (!s_ota_active) return;
+    Update.abort();
+    mbedtls_sha256_free(&s_ota_sha);
+    s_ota_active = false;
+    Serial.printf("[OTA] aborted at %u/%u: %s\n", (unsigned)s_ota_received, (unsigned)s_ota_size, reason);
+    if (s_ota_cb != nullptr) s_ota_cb(OTA_EVENT_FAILED, s_ota_received, s_ota_size);
+}
+
+static void ota_fail(uint8_t status, const char *reason) {
+    ota_abort(reason);
+    ota_notify(status);
+}
+
+static void ota_handle_begin(const uint8_t *buf, size_t len) {
+    if (len != 1 + 4 + 32) {
+        ota_notify(OTA_STATUS_ERR_FORMAT);
+        return;
+    }
+    ota_abort("restarted by a new BEGIN"); // 上一次没收完又来了新的 BEGIN，从头来
+    s_ota_size = read_u32_le(buf + 1);
+    s_ota_received = 0;
+    memcpy(s_ota_expected_sha, buf + 5, sizeof(s_ota_expected_sha));
+    if (s_ota_size == 0 || !Update.begin(s_ota_size, U_FLASH)) {
+        Serial.printf("[OTA] begin(%u) failed: %s\n", (unsigned)s_ota_size, Update.errorString());
+        ota_notify(OTA_STATUS_ERR_BEGIN);
+        return;
+    }
+    mbedtls_sha256_init(&s_ota_sha);
+    mbedtls_sha256_starts(&s_ota_sha, 0); // 0 = SHA-256（不是 SHA-224）
+    s_ota_last_ms = millis();
+    s_ota_active = true;
+    Serial.printf("[OTA] begin, %u bytes\n", (unsigned)s_ota_size);
+    if (s_ota_cb != nullptr) s_ota_cb(OTA_EVENT_STARTED, 0, s_ota_size);
+    ota_notify(OTA_STATUS_READY);
+}
+
+static void ota_handle_data(const uint8_t *buf, size_t len) {
+    if (!s_ota_active || len < 1 + 4) {
+        ota_fail(OTA_STATUS_ERR_SEQUENCE, "DATA without BEGIN");
+        return;
+    }
+    uint32_t offset = read_u32_le(buf + 1);
+    const uint8_t *data = buf + 5;
+    size_t data_len = len - 5;
+    if (offset != s_ota_received || s_ota_received + data_len > s_ota_size) {
+        ota_fail(OTA_STATUS_ERR_SEQUENCE, "unexpected offset / too much data");
+        return;
+    }
+    // Update::write 的参数不是 const，但不会改数据
+    if (Update.write(const_cast<uint8_t *>(data), data_len) != data_len) {
+        ota_fail(OTA_STATUS_ERR_WRITE, Update.errorString());
+        return;
+    }
+    mbedtls_sha256_update(&s_ota_sha, data, data_len);
+    s_ota_received += data_len;
+    s_ota_last_ms = millis();
+    if (s_ota_cb != nullptr) s_ota_cb(OTA_EVENT_PROGRESS, s_ota_received, s_ota_size);
+}
+
+static void ota_handle_end() {
+    if (!s_ota_active) {
+        ota_notify(OTA_STATUS_ERR_SEQUENCE);
+        return;
+    }
+    uint8_t actual_sha[32];
+    mbedtls_sha256_finish(&s_ota_sha, actual_sha);
+    if (s_ota_received != s_ota_size || memcmp(actual_sha, s_ota_expected_sha, sizeof(actual_sha)) != 0) {
+        ota_fail(OTA_STATUS_ERR_VERIFY, "size or SHA-256 mismatch");
+        return;
+    }
+    // end() 会再校验一遍固件镜像本身，通过才把启动分区切到新固件
+    if (!Update.end()) {
+        ota_fail(OTA_STATUS_ERR_END, Update.errorString());
+        return;
+    }
+    mbedtls_sha256_free(&s_ota_sha);
+    s_ota_active = false;
+    Serial.printf("[OTA] done, %u bytes verified, boot partition switched\n", (unsigned)s_ota_received);
+    ota_notify(OTA_STATUS_DONE);
+    if (s_ota_cb != nullptr) s_ota_cb(OTA_EVENT_DONE, s_ota_received, s_ota_size);
+}
+
+class OtaCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &connInfo) override {
+        NimBLEAttValue value = characteristic->getValue();
+        const uint8_t *buf = value.data();
+        size_t len = value.length();
+        if (len < 1) {
+            ota_notify(OTA_STATUS_ERR_FORMAT);
+            return;
+        }
+        switch (buf[0]) {
+            case OTA_OP_BEGIN: ota_handle_begin(buf, len); break;
+            case OTA_OP_DATA: ota_handle_data(buf, len); break;
+            case OTA_OP_END: ota_handle_end(); break;
+            case OTA_OP_ABORT: ota_abort("aborted by phone"); break;
+            default: ota_fail(OTA_STATUS_ERR_FORMAT, "unknown opcode"); break;
+        }
+    }
+};
+static OtaCallbacks s_ota_callbacks;
+
 // 连接/配对生命周期。配对时自动确认自己这一侧（不等物理按键），真正的
 // 人工核对靠人去比屏幕（见 ble_on_passkey，main.cpp 会显示这个码）和
 // 串口打印的 6 位数是不是跟手机弹窗上的一样，没有削弱安全性，只是没有
@@ -205,6 +378,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         s_connected = false;
         s_authenticated = false;
         Serial.printf("[BLE] host disconnected (reason=%d), restarting advertising\n", reason);
+        ota_abort("disconnected"); // 收到一半断线：已写的内容作废，当前固件不受影响
         NimBLEDevice::startAdvertising();
         if (s_disconnected_cb != nullptr) {
             s_disconnected_cb();
@@ -246,6 +420,10 @@ void ble_init() {
         }
     }
 
+    // OTA 每包能带多少数据取决于 MTU，NimBLE 默认上限只有 255，提到 BLE
+    // 允许的最大值 517（实际值取手机和这里的较小者，见插件 requestMtu）。
+    NimBLEDevice::setMTU(517);
+
     // Passkey（数字比对）配对：MITM + Secure Connections，DisplayYesNo
     // 触发数字比对而不是要求手机输入数字。
     NimBLEDevice::setSecurityAuth(BLE_SM_PAIR_AUTHREQ_BOND |
@@ -280,6 +458,11 @@ void ble_init() {
     displayChar->setCallbacks(&s_display_update_callbacks);
     displayChar->createDescriptor((uint16_t)0x2901, NIMBLE_PROPERTY::READ)->setValue("Knob Display Sync");
 
+    s_ota_char = service->createCharacteristic(
+        kOtaCharUUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC | NIMBLE_PROPERTY::NOTIFY);
+    s_ota_char->setCallbacks(&s_ota_callbacks);
+    s_ota_char->createDescriptor((uint16_t)0x2901, NIMBLE_PROPERTY::READ)->setValue("Knob Firmware OTA");
+
     // 车机的蓝牙设置界面会按"设备类型"过滤扫描结果，只展示手机类/HID类
     // 设备，我们这个纯自定义 GATT 外设会被过滤掉、压根不出现在列表里。
     // 这里额外挂一个标准 HID 服务（0x1812）+ 把广播的 Appearance 设成
@@ -291,6 +474,16 @@ void ble_init() {
     hid->setHidInfo(0x00, 0x02); // country=0（未本地化），flags=NormallyConnectable
     hid->setReportMap(const_cast<uint8_t *>(kHidReportMap), sizeof(kHidReportMap));
     hid->getInputReport(1); // 只声明结构，不会被调用 notify()
+
+    // 固件版本号和板子名称挂在 HID 自带的设备信息服务（0x180A）里，用
+    // 标准的"固件版本"（0x2A26）/"硬件版本"（0x2A27）特征值，nRF Connect
+    // 之类的工具也能直接认出来。插件连上后读这两个值：显示版本，以后
+    // OTA 也靠它判断要不要升级。跟上面两个自定义特征值一样要求加密。
+    NimBLEService *deviceInfo = hid->getDeviceInfoService();
+    deviceInfo->createCharacteristic((uint16_t)0x2A26, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC)
+        ->setValue(FW_VERSION);
+    deviceInfo->createCharacteristic((uint16_t)0x2A27, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC)
+        ->setValue(BOARD_NAME);
 
     server->start();
 
@@ -377,4 +570,17 @@ void ble_on_paired(void (*callback)()) {
 
 void ble_on_disconnected(void (*callback)()) {
     s_disconnected_cb = callback;
+}
+
+void ble_ota_check_timeout() {
+    // ⚠️ 跑在 loop() 线程，ota_abort 平时跑在 NimBLE 线程。只在已经 20 秒
+    // 没收到任何数据时才会走到这里，此时 NimBLE 线程不会同时在写 flash；
+    // 万一放弃之后手机又发来 DATA，会因为 s_ota_active=false 收到 ERR_SEQUENCE。
+    if (s_ota_active && millis() - s_ota_last_ms > OTA_IDLE_TIMEOUT_MS) {
+        ota_abort("no data for too long");
+    }
+}
+
+void ble_on_ota(void (*callback)(OtaEvent event, uint32_t received, uint32_t total)) {
+    s_ota_cb = callback;
 }

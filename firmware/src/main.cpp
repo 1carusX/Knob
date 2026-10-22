@@ -23,6 +23,7 @@
 #include "display.h"
 #include "encoder.h"
 #include "ble.h"
+#include "fw_version_gen.h"
 
 // 中文字体（font_zh_36.c，lvgl 官方字体转换器生成，只嵌入了固件实际
 // 用到的汉字，NotoSerifCJKsc-Regular 生成）。原来还有一份 font_zh_18
@@ -61,6 +62,7 @@ enum ScreenState {
     SCREEN_DISCONNECTED, // 未连接：显示配对码（正在配对时）/ 设备名+"未配对"（从没配对过）/ "等待连接"（配过、暂时断连）
     SCREEN_PAIRED_TOAST, // 刚配对/连接成功，显示提示 1 秒
     SCREEN_NORMAL,       // 显示手机同步过来的数据
+    SCREEN_OTA,          // 固件升级中：进度环 + 百分比，不响应旋钮操作，完成后重启
 };
 // 除了字符缓冲区（下面单独说明），这个状态机相关的变量都要标
 // volatile：NimBLE 的连接/配对回调（on_passkey/on_paired/on_disconnected/
@@ -81,6 +83,14 @@ static volatile bool s_needs_redraw = false;
 
 constexpr uint32_t PAIRED_TOAST_MS = 1000;
 static volatile uint32_t s_toast_until_ms = 0;
+
+// 固件升级进度（0~100）和"升级完成、什么时候重启"。重启不在 OTA 回调里
+// 直接做：留一点时间让"完成"通知发给手机、屏幕显示出"正在重启"，到点
+// 由 loop() 调 ESP.restart()。0 = 没有待执行的重启。
+static volatile int s_ota_percent = 0;
+static volatile bool s_ota_done = false;
+static volatile uint32_t s_restart_at_ms = 0;
+constexpr uint32_t OTA_RESTART_DELAY_MS = 1500;
 
 // 正在配对时，手机和固件两边应该显示同一个 6 位确认码；没有正在配对
 // 时是 -1。已配对过的设备重连不会再走一遍配对流程，也就不会再有这个码
@@ -399,11 +409,40 @@ static void redraw_normal() {
     }
 }
 
+// 固件升级中：整圈进度环（跟长按提交/清配对那两个进度环同一个画法，
+// 换成绿色）+ 中间大字百分比，完成后显示"正在重启"。
+static void redraw_ota() {
+    lv_obj_add_flag(s_label_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_label_right, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < MAX_SUB_DOTS; i++) lv_obj_add_flag(s_sub_dots[i], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_label_value, LV_OBJ_FLAG_HIDDEN);
+    reset_label_value_style();
+
+    lv_obj_remove_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+    lv_arc_set_bg_angles(s_arc, 0, 360);
+    lv_arc_set_rotation(s_arc, 270); // 从正上方开始，顺时针
+    lv_arc_set_mode(s_arc, LV_ARC_MODE_NORMAL);
+    lv_arc_set_range(s_arc, 0, 100);
+    lv_arc_set_value(s_arc, s_ota_percent);
+    lv_obj_set_style_arc_color(s_arc, LV_COLOR_MAKE(0x43, 0xA0, 0x47), LV_PART_INDICATOR); // 绿（Material Green 600）
+
+    lv_label_set_text(s_label_name, "固件升级");
+    if (s_ota_done) {
+        lv_label_set_text(s_label_value, "正在重启");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d%%", s_ota_percent);
+        lv_label_set_text(s_label_value, buf);
+    }
+    lv_obj_set_style_text_color(s_label_value, color_solid(), 0);
+}
+
 static void redraw() {
     switch (s_screen_state) {
         case SCREEN_DISCONNECTED: redraw_disconnected(); break;
         case SCREEN_PAIRED_TOAST: redraw_paired_toast(); break;
         case SCREEN_NORMAL: redraw_normal(); break;
+        case SCREEN_OTA: redraw_ota(); break;
     }
 }
 
@@ -437,10 +476,44 @@ static void on_paired() {
 static void on_disconnected() {
     s_pending_passkey = -1;
     s_paired_via_confirm = false;
-    s_screen_state = SCREEN_DISCONNECTED;
+    // 升级完成、等着重启时手机先断开了：继续显示"正在重启"，不切回未连接
+    if (!s_ota_done) s_screen_state = SCREEN_DISCONNECTED;
     s_have_display_data = false;
     s_display_pending = false;
     s_needs_redraw = true;
+}
+
+// 固件升级事件（见 ble_on_ota）。跟上面几个回调一样跑在 NimBLE 线程上
+// （超时放弃的 FAILED 例外，来自 loop() 里的 ble_ota_check_timeout），
+// 只改状态、置重绘标志。进度只在百分比变了才重绘，不是每收一包都重绘。
+// 失败时：还连着就回到正常画面（数据还在），断线导致的失败随后会有
+// on_disconnected() 把画面切到"未连接"。
+static void on_ota(OtaEvent event, uint32_t received, uint32_t total) {
+    int percent = total > 0 ? (int)((uint64_t)received * 100 / total) : 0;
+    switch (event) {
+        case OTA_EVENT_STARTED:
+            s_ota_percent = 0;
+            s_ota_done = false;
+            s_screen_state = SCREEN_OTA;
+            s_needs_redraw = true;
+            break;
+        case OTA_EVENT_PROGRESS:
+            if (percent != s_ota_percent) {
+                s_ota_percent = percent;
+                s_needs_redraw = true;
+            }
+            break;
+        case OTA_EVENT_DONE:
+            s_ota_percent = 100;
+            s_ota_done = true;
+            s_restart_at_ms = millis() + OTA_RESTART_DELAY_MS;
+            s_needs_redraw = true;
+            break;
+        case OTA_EVENT_FAILED:
+            s_screen_state = SCREEN_NORMAL;
+            s_needs_redraw = true;
+            break;
+    }
 }
 
 // 手机同步了新的显示数据时调用（见 ble_on_display_update）——切停靠点、
@@ -461,6 +534,10 @@ static void on_display_update(const DisplayData &data) {
         display_set_brightness((uint8_t)data.getInt("brightness"));
         if (!data.has("title")) return; // 纯亮度推送，没有页面数据，到此为止
     }
+
+    // 升级期间插件会暂停显示同步；万一还是来了页面数据，也不能把升级
+    // 画面切掉（亮度上面已经处理过，不受影响）。
+    if (s_screen_state == SCREEN_OTA) return;
 
     DisplayLayout layout = parse_layout(data.getString("layout", "ac_link"));
     const char *title = data.getString("title");
@@ -624,6 +701,8 @@ static void check_boot_button_reset() {
     static bool triggered = false;
     static bool showing_progress = false;
 
+    if (s_screen_state == SCREEN_OTA) return; // 升级中不响应，也别把进度环画到升级画面上
+
     bool pressed = digitalRead(BOOT_BTN_PIN) == LOW;
     if (!pressed) {
         if (showing_progress) {
@@ -721,7 +800,7 @@ static void check_enter_commit_progress() {
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("[Knob] boot");
+    Serial.printf("[Knob] boot, firmware %s (%s)\n", FW_VERSION, BOARD_NAME);
 
     pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
     display_init();
@@ -731,6 +810,7 @@ void setup() {
     ble_on_passkey(on_passkey);
     ble_on_paired(on_paired);
     ble_on_disconnected(on_disconnected);
+    ble_on_ota(on_ota);
     // ble_init() 里才会算出广播名字（ble_get_device_name() 之后才有效），
     // 所以 redraw() 得放在它后面，不然刚开机那一下会显示空名字。
     ble_init();
@@ -751,6 +831,15 @@ void loop() {
     if (s_needs_redraw) {
         s_needs_redraw = false;
         redraw();
+    }
+
+    ble_ota_check_timeout(); // 升级卡住时放弃、屏幕切回正常画面（经 on_ota 的 FAILED）
+
+    // 固件升级完成，"正在重启"显示一会儿后重启进新固件（见 on_ota）
+    if (s_restart_at_ms != 0 && (int32_t)(millis() - s_restart_at_ms) >= 0) {
+        Serial.println("[OTA] restarting into the new firmware");
+        Serial.flush();
+        ESP.restart();
     }
 
     // "配对成功"提示到时间了：如果提示期间手机推过新数据，直接应用；

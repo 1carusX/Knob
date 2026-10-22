@@ -59,9 +59,48 @@ class BleManager(context: Context, private val host: KnobHost) {
     /** 被动扫描发现候选设备，等待用户在界面上确认配对（见 [pairCandidate]）。 */
     var onCandidateFound: ((name: String) -> Unit)? = null
 
+    /**
+     * 连上后读到的固件版本号和板子名称（设备信息服务 0x2A26/0x2A27），在
+     * onConnectionStateChanged(connected=true) 之前回调。读不到（旧固件没有
+     * 这两个特征值，或者读失败）对应参数就是 null。otaSupported = 旋钮有
+     * 没有 OTA 特征值（没有就只能用 USB 刷）。
+     */
+    var onFirmwareInfo: ((version: String?, board: String?, otaSupported: Boolean) -> Unit)? = null
+
+    /** OTA 进度：已发送并被旋钮确认的字节数 / 总字节数。 */
+    var onOtaProgress: ((sent: Int, total: Int) -> Unit)? = null
+
+    /** OTA 结束：成功（旋钮已校验并切换启动分区，马上重启）或失败（附原因）。 */
+    var onOtaResult: ((success: Boolean, message: String) -> Unit)? = null
+
     private var gatt: BluetoothGatt? = null
     private var displayCharacteristic: BluetoothGattCharacteristic? = null
     private var keyEventCharacteristic: BluetoothGattCharacteristic? = null
+    private var otaCharacteristic: BluetoothGattCharacteristic? = null
+
+    // 协商到的 ATT MTU，决定 OTA 每包能带多少数据（见 otaChunkSize）
+    @Volatile
+    private var negotiatedMtu = 23
+
+    /**
+     * 正在进行的一次 OTA，null = 没在升级。升级期间独占 GATT 写通道，显示
+     * 同步全部丢弃（见 [write]）。只在主线程碰——GATT 回调都先 post 回主线程。
+     */
+    private class OtaSession(val data: ByteArray, val sha256: ByteArray) {
+        var beginSent = false   // BEGIN 发出去了（开始前可能要等一个在飞的显示写完成）
+        var ready = false       // 旋钮回了 READY 通知
+        var started = false     // 进入发数据阶段（READY 和 BEGIN 的写回执都到了）
+        // 正在等写回执的那个操作码，null = 没有写在飞。⚠️ 回执必须按它来认，
+        // 不能按 started 之类的阶段推断：固件在处理 BEGIN 的回调里就发了 READY
+        // 通知，通知会比 BEGIN 的写回执先到，按阶段推断会把迟到的 BEGIN 回执
+        // 当成第一包 DATA 的回执，第一包还在飞就发第二包（实测 writeCharacteristic 被拒）
+        var inFlightOp: Byte? = null
+        var offset = 0          // 已被旋钮确认的字节数
+        var inFlightLen = 0     // 正在飞的那一包 DATA 的数据长度，写回执回来才计入 offset
+        var lastPercent = -1
+    }
+    private var ota: OtaSession? = null
+    private val otaTimeout = Runnable { failOta("超过 ${OTA_TIMEOUT_MS / 1000} 秒没有回应", sendAbort = true) }
 
     // 同一条 GATT 连接同一时刻只能有一个写操作在飞（前一个的 onCharacteristicWrite
     // 没回来之前发下一个会被系统直接拒绝）。syncToKnob() 可能被多个独立触发源
@@ -72,6 +111,22 @@ class BleManager(context: Context, private val host: KnobHost) {
     // 蓝牙 Binder 线程，见下方，会先 post 回主线程再改这两个字段）。
     private var writeInFlight = false
     private var pendingWrite: ByteArray? = null
+
+    // 连接建立后依次读设备信息服务里的这几个特征值（GATT 同一时刻只能有
+    // 一个操作在飞，只能一个读完再读下一个），读完才通知"已连接"——那会
+    // 触发 syncToKnob() 写显示特征值，提前通知会跟读操作撞车。只在 GATT
+    // 回调里碰，回调是串行的，不用加锁。
+    private val infoReadQueue = ArrayDeque<BluetoothGattCharacteristic>()
+    private val infoReadResults = mutableMapOf<UUID, String?>()
+
+    // 这次连接是不是已经清过一次 GATT 缓存——见 onServicesDiscovered，每次
+    // 连接最多清一次，清完还缺就说明固件真的没有，不能无限重试。
+    private var gattCacheRefreshed = false
+
+    // 这次连接是不是已经发起过服务发现。⚠️ 实测有的手机（小米 Android 16）
+    // 会把 onMtuChanged 回调两次，每次都 discoverServices() 的话，两次发现
+    // 结果会各自走一遍订阅/读版本/通知已连接，互相撞车。
+    private var discoveryStarted = false
 
     private fun logBoth(msg: String, isWarning: Boolean = false) {
         if (isWarning) Log.w(TAG, msg) else Log.i(TAG, msg)
@@ -339,12 +394,16 @@ class BleManager(context: Context, private val host: KnobHost) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     candidateDevice = null // 连都连上了，不需要再等界面确认配对
+                    gattCacheRefreshed = false
+                    discoveryStarted = false
                     // 提示系统走低延迟连接（配合固件短连接间隔）；然后先协商大 MTU
-                    // 再发现服务——默认 ATT MTU 23 字节装不下带中文的显示 payload。
+                    // 再发现服务——默认 ATT MTU 23 字节装不下带中文的显示 payload，
+                    // OTA 每包的数据量也取决于它。517 是 BLE 允许的最大值，实际
+                    // 结果取手机和固件（NimBLEDevice::setMTU）两边的较小者。
                     // onMtuChanged() 里才真正 discoverServices()，失败则退回默认 MTU。
                     g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                     logBoth("GATT 已连接，请求更大 MTU")
-                    g.requestMtu(185)
+                    g.requestMtu(517)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     // autoConnect=false 断开不会自动重连：关掉 GATT、清状态，
@@ -355,8 +414,13 @@ class BleManager(context: Context, private val host: KnobHost) {
                     gatt = null
                     displayCharacteristic = null
                     keyEventCharacteristic = null
+                    otaCharacteristic = null
                     writeInFlight = false
                     pendingWrite = null
+                    infoReadQueue.clear()
+                    infoReadResults.clear()
+                    // 升级成功后旋钮会自己重启断开，那时 ota 已经清空，不算失败
+                    mainHandler.post { if (ota != null) failOta("连接断开", sendAbort = false) }
                     notifyConnectionState(connected = false)
                     tryConnect()
                 }
@@ -365,12 +429,35 @@ class BleManager(context: Context, private val host: KnobHost) {
 
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            if (discoveryStarted) {
+                logBoth("MTU 协商结果=$mtu (status=$status)，重复回调，忽略")
+                return
+            }
+            discoveryStarted = true
+            if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu
             logBoth("MTU 协商结果=$mtu (status=$status)，开始发现服务")
             g.discoverServices()
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            logBoth("发现服务(status=$status)：" + g.services.joinToString { svc ->
+                "${shortUuid(svc.uuid)}[${svc.characteristics.joinToString(" ") { shortUuid(it.uuid) }}]"
+            })
+            // ⚠️ Android 会缓存已配对设备的服务列表，固件新增了特征值（固件版本号、
+            // OTA……OTA 之后 GATT 结构随时可能变）也照样用旧缓存，看起来就像固件
+            // 没有这个特征值。插件跟固件是一起打包发布的，插件用到的特征值就是
+            // 这一版固件该有的，缺任何一个都清一次这个设备的 GATT 缓存、重新
+            // 发现；每次连接最多一次，清完还缺就是旋钮上确实是旧固件。
+            val missing = REQUIRED_CHARACTERISTICS.filter { (svc, chr) -> g.getService(svc)?.getCharacteristic(chr) == null }
+            if (missing.isNotEmpty() && !gattCacheRefreshed) {
+                gattCacheRefreshed = true
+                if (refreshGattCache(g)) {
+                    logBoth("服务列表里缺 ${missing.joinToString { shortUuid(it.second) }}，可能是系统缓存了旧固件的服务列表，已清缓存，重新发现服务")
+                    mainHandler.postDelayed({ if (gatt === g) g.discoverServices() }, GATT_REFRESH_DELAY_MS)
+                    return
+                }
+            }
             val service = g.getService(SERVICE_UUID)
             if (service == null) {
                 logBoth("没找到自定义服务（UUID 对不上，固件版本可能太旧）", isWarning = true)
@@ -379,6 +466,7 @@ class BleManager(context: Context, private val host: KnobHost) {
 
             displayCharacteristic = service.getCharacteristic(DISPLAY_CHARACTERISTIC_UUID)
             logBoth(if (displayCharacteristic != null) "显示同步特征值已就绪" else "没找到显示同步特征值", isWarning = displayCharacteristic == null)
+            otaCharacteristic = service.getCharacteristic(OTA_CHARACTERISTIC_UUID)
 
             val keyChar = service.getCharacteristic(KEY_EVENT_CHARACTERISTIC_UUID)
             // ⚠️ GATT 同一时刻只允许一个写操作在飞：CCCD 订阅写真发出去了
@@ -390,33 +478,62 @@ class BleManager(context: Context, private val host: KnobHost) {
                 false
             } else {
                 keyEventCharacteristic = keyChar
-                subscribeKeyEvents(g, keyChar)
+                subscribeNotifications(g, keyChar, "按键事件")
             }
-            if (!waitingForCccd && displayCharacteristic != null) {
-                notifyConnectionState(connected = true, device = g.device)
-            }
+            if (!waitingForCccd) startFirmwareInfoRead(g)
         }
 
         @SuppressLint("MissingPermission")
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            val isKeyEvent = descriptor.characteristic.uuid == KEY_EVENT_CHARACTERISTIC_UUID
+            val label = if (isKeyEvent) "按键事件" else "OTA"
             logBoth(
-                if (status == BluetoothGatt.GATT_SUCCESS) "按键事件通知订阅完成" else "按键事件通知订阅失败 status=$status",
+                if (status == BluetoothGatt.GATT_SUCCESS) "${label}通知订阅完成" else "${label}通知订阅失败 status=$status",
                 isWarning = status != BluetoothGatt.GATT_SUCCESS
             )
-            // CCCD 写真正完成，此时通知"已连接"（触发 syncToKnob 写显示）才不会撞车
-            if (displayCharacteristic != null) {
-                notifyConnectionState(connected = true, device = g.device)
-            }
+            // 一个 CCCD 写完才能写下一个：按键事件订阅完接着订阅 OTA 通知（固件
+            // 支持的话），都完成再读固件版本，读完才通知"已连接"（见 startFirmwareInfoRead）
+            val otaChar = otaCharacteristic
+            if (isKeyEvent && otaChar != null && subscribeNotifications(g, otaChar, "OTA")) return
+            startFirmwareInfoRead(g)
+        }
+
+        // API 33+ 路径
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
+        ) {
+            handleFirmwareInfoRead(g, characteristic, value, status)
+        }
+
+        // API < 33 路径——33+ 已由上面处理（上面那个没调 super，系统不会再转调这里）
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
+            handleFirmwareInfoRead(g, characteristic, characteristic.value ?: ByteArray(0), status)
         }
 
         // 显示同步特征值写完成的回执——收到这个才能发下一个排队的写，见 [pendingWrite]。
         // 跑在蓝牙 Binder 线程，先 post 回主线程再碰 writeInFlight/pendingWrite。
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (characteristic.uuid == OTA_CHARACTERISTIC_UUID) {
+                mainHandler.post { onOtaWriteComplete(status) }
+                return
+            }
             if (characteristic.uuid != DISPLAY_CHARACTERISTIC_UUID) return
             mainHandler.post {
                 writeInFlight = false
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     logBoth("显示同步写入失败 status=$status", isWarning = true)
+                }
+                // 有一次 OTA 在等这个显示写完成才能发 BEGIN（见 startOta）
+                val session = ota
+                if (session != null && !session.beginSent) {
+                    pendingWrite = null
+                    sendOtaBegin(session)
+                    return@post
                 }
                 val next = pendingWrite ?: return@post
                 pendingWrite = null
@@ -431,6 +548,7 @@ class BleManager(context: Context, private val host: KnobHost) {
             value: ByteArray
         ) {
             if (characteristic.uuid == KEY_EVENT_CHARACTERISTIC_UUID) handleKeyEventNotification(value)
+            if (characteristic.uuid == OTA_CHARACTERISTIC_UUID) mainHandler.post { onOtaNotification(value) }
         }
 
         // API < 33 路径——33+ 已由上面处理，这里直接跳过，避免同一通知处理两遍
@@ -438,23 +556,28 @@ class BleManager(context: Context, private val host: KnobHost) {
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
             if (characteristic.uuid == KEY_EVENT_CHARACTERISTIC_UUID) handleKeyEventNotification(characteristic.value)
+            if (characteristic.uuid == OTA_CHARACTERISTIC_UUID) {
+                val value = characteristic.value.copyOf() // 回调返回后这个数组可能被复用，post 之前先拷一份
+                mainHandler.post { onOtaNotification(value) }
+            }
         }
     }
 
     /**
-     * 订阅按键事件：本地开通知回调 + 写 CCCD 通知外设"开始推送"，两步缺一不可。
+     * 订阅某个特征值的通知（按键事件 / OTA 结果）：本地开通知回调 + 写 CCCD
+     * 通知外设"开始推送"，两步缺一不可。label 只用于日志。
      * @return CCCD 写是否真的发出去了——true 时调用方须等 onDescriptorWrite()
      *   才算完成；false（没找到特征值/描述符或写失败）不会有回调，不能傻等。
      */
     @SuppressLint("MissingPermission")
-    private fun subscribeKeyEvents(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic): Boolean {
+    private fun subscribeNotifications(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, label: String): Boolean {
         if (!g.setCharacteristicNotification(characteristic, true)) {
-            logBoth("setCharacteristicNotification 失败，按键事件收不到", isWarning = true)
+            logBoth("setCharacteristicNotification 失败，${label}通知收不到", isWarning = true)
             return false
         }
         val cccd = characteristic.getDescriptor(CCCD_UUID)
         if (cccd == null) {
-            logBoth("按键事件特征值没有 CCCD 描述符，收不到通知", isWarning = true)
+            logBoth("${label}特征值没有 CCCD 描述符，收不到通知", isWarning = true)
             return false
         }
         val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -465,8 +588,76 @@ class BleManager(context: Context, private val host: KnobHost) {
             @Suppress("DEPRECATION")
             g.writeDescriptor(cccd)
         }
-        logBoth(if (ok) "已发起按键事件通知订阅" else "订阅按键事件通知失败", isWarning = !ok)
+        logBoth(if (ok) "已发起${label}通知订阅" else "订阅${label}通知失败", isWarning = !ok)
         return ok
+    }
+
+    /**
+     * 清掉系统对这个设备缓存的服务列表。`BluetoothGatt.refresh()` 是隐藏 API，
+     * 只能反射调用；拿不到（被系统限制）就返回 false，按原来的缓存继续走。
+     */
+    private fun refreshGattCache(g: BluetoothGatt): Boolean = try {
+        g.javaClass.getMethod("refresh").invoke(g) as? Boolean ?: false
+    } catch (e: Throwable) {
+        logBoth("清 GATT 缓存失败：${e.javaClass.simpleName} ${e.message}", isWarning = true)
+        false
+    }
+
+    /** 标准 16 位 UUID 只显示 4 位十六进制（如 180a），自定义 128 位 UUID 显示前 8 位，日志里好认。 */
+    private fun shortUuid(uuid: UUID): String {
+        val str = uuid.toString()
+        return if (str.endsWith("-0000-1000-8000-00805f9b34fb") && str.startsWith("0000")) str.substring(4, 8) else str.substring(0, 8)
+    }
+
+    /**
+     * 订阅完按键通知后调用：依次读设备信息服务里的固件版本、板子名称，全部
+     * 读完（或者没有可读的）再交给 [finishFirmwareInfoRead] 通知持有者。
+     */
+    @SuppressLint("MissingPermission")
+    private fun startFirmwareInfoRead(g: BluetoothGatt) {
+        infoReadQueue.clear()
+        infoReadResults.clear()
+        val deviceInfo = g.getService(DEVICE_INFO_SERVICE_UUID)
+        for (uuid in listOf(FIRMWARE_REVISION_UUID, HARDWARE_REVISION_UUID)) {
+            deviceInfo?.getCharacteristic(uuid)?.let { infoReadQueue.addLast(it) }
+        }
+        if (infoReadQueue.isEmpty()) {
+            logBoth("旋钮没有提供固件版本信息（固件太旧，需要用 USB 刷一次新固件）", isWarning = true)
+        }
+        readNextFirmwareInfo(g)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun readNextFirmwareInfo(g: BluetoothGatt) {
+        while (true) {
+            val char = infoReadQueue.removeFirstOrNull() ?: break
+            if (g.readCharacteristic(char)) return // 等 onCharacteristicRead 回来再读下一个
+            logBoth("读取 ${char.uuid} 发起失败", isWarning = true)
+            infoReadResults[char.uuid] = null
+        }
+        finishFirmwareInfoRead(g)
+    }
+
+    private fun handleFirmwareInfoRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+        if (characteristic.uuid != FIRMWARE_REVISION_UUID && characteristic.uuid != HARDWARE_REVISION_UUID) return
+        infoReadResults[characteristic.uuid] = if (status == BluetoothGatt.GATT_SUCCESS) {
+            value.toString(Charsets.UTF_8).trim()
+        } else {
+            logBoth("读取 ${characteristic.uuid} 失败 status=$status", isWarning = true)
+            null
+        }
+        readNextFirmwareInfo(g)
+    }
+
+    private fun finishFirmwareInfoRead(g: BluetoothGatt) {
+        val version = infoReadResults[FIRMWARE_REVISION_UUID]
+        val board = infoReadResults[HARDWARE_REVISION_UUID]
+        val otaSupported = otaCharacteristic != null
+        logBoth("旋钮固件版本=${version ?: "未知"} 板子=${board ?: "未知"} 支持OTA=$otaSupported")
+        mainHandler.post { onFirmwareInfo?.invoke(version, board, otaSupported) }
+        if (displayCharacteristic != null) {
+            notifyConnectionState(connected = true, device = g.device)
+        }
     }
 
     // ⚠️ GATT 回调（含 onCharacteristicChanged）跑在蓝牙 Binder 线程而非主线程：
@@ -535,6 +726,8 @@ class BleManager(context: Context, private val host: KnobHost) {
      * 排队等前一个写完成，不代表对方已收到；固件侧以串口日志为准）。
      */
     fun write(data: Map<String, Any>): Boolean {
+        // 升级期间 OTA 独占写通道，显示同步直接丢弃（升级完旋钮会重启，重连后插件会重新同步一次）
+        if (ota != null) return false
         if (gatt == null) {
             logBoth("write() 失败：GATT 还没连上", isWarning = true)
             return false
@@ -614,6 +807,174 @@ class BleManager(context: Context, private val host: KnobHost) {
         return out.toByteArray()
     }
 
+    // ==================== 固件 OTA（协议见 firmware/src/ble.cpp 的 OTA 一节） ====================
+
+    /**
+     * 开始给旋钮推新固件。必须在主线程调用，且已连上、旋钮支持 OTA。
+     * 有显示写在飞时先不发 BEGIN，等它的写回执回来再发（见 onCharacteristicWrite）。
+     * @return 是否真的开始了（已经在升级 / 没连上 / 旋钮不支持时返回 false）
+     */
+    fun startOta(firmware: ByteArray, sha256: ByteArray): Boolean {
+        if (ota != null) return false
+        if (gatt == null || otaCharacteristic == null) {
+            logBoth("startOta() 失败：没连上，或者旋钮固件不支持 OTA", isWarning = true)
+            return false
+        }
+        val session = OtaSession(firmware, sha256)
+        ota = session
+        pendingWrite = null
+        logBoth("开始 OTA：${firmware.size} 字节，MTU=$negotiatedMtu，每包 ${otaChunkSize()} 字节")
+        armOtaTimeout() // 等在飞的显示写完成也算在超时里，免得它的回执永远不来时卡住
+        if (!writeInFlight) sendOtaBegin(session)
+        return true
+    }
+
+    // 每包 = 5 字节 OTA 头 + 数据，受两个上限约束：一次写最多 MTU - 3 字节（ATT 头），
+    // 固件 NimBLE 特征值最长 512 字节（BLE_ATT_ATTR_MAX_LEN）。MTU 517 时卡在后者，每包 507 字节数据。
+    private fun otaChunkSize(): Int = (minOf(negotiatedMtu - 3, OTA_MAX_WRITE_LEN) - 5).coerceAtLeast(1)
+
+    private fun sendOtaBegin(session: OtaSession) {
+        session.beginSent = true
+        val payload = ByteArray(1 + 4 + 32)
+        payload[0] = OTA_OP_BEGIN
+        putIntLe(payload, 1, session.data.size)
+        session.sha256.copyInto(payload, 5)
+        writeOta(payload)
+    }
+
+    private fun sendNextOtaChunk(session: OtaSession) {
+        val len = minOf(otaChunkSize(), session.data.size - session.offset)
+        val payload = ByteArray(1 + 4 + len)
+        payload[0] = OTA_OP_DATA
+        putIntLe(payload, 1, session.offset)
+        session.data.copyInto(payload, 5, session.offset, session.offset + len)
+        session.inFlightLen = len
+        writeOta(payload)
+    }
+
+    /** 每一次 OTA 写回执：DATA 写完才算对方收下了这一包，接着发下一包或者 END。 */
+    private fun onOtaWriteComplete(status: Int) {
+        val session = ota ?: return
+        val op = session.inFlightOp
+        session.inFlightOp = null
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failOta("写入被拒绝 status=$status", sendAbort = true)
+            return
+        }
+        armOtaTimeout()
+        when (op) {
+            OTA_OP_BEGIN -> if (session.ready) startOtaData(session) // READY 先到了，在等这个回执
+            OTA_OP_DATA -> onOtaChunkAcked(session)
+            else -> {} // END 的结果等通知
+        }
+    }
+
+    // READY 通知和 BEGIN 写回执谁后到谁调这里，两个都到了才开始发数据
+    private fun startOtaData(session: OtaSession) {
+        if (session.started) return
+        session.started = true
+        logBoth("旋钮已准备好接收固件")
+        sendNextOtaChunk(session)
+    }
+
+    private fun onOtaChunkAcked(session: OtaSession) {
+        session.offset += session.inFlightLen
+        session.inFlightLen = 0
+        val percent = (session.offset.toLong() * 100 / session.data.size).toInt()
+        if (percent != session.lastPercent) {
+            session.lastPercent = percent
+            onOtaProgress?.invoke(session.offset, session.data.size)
+        }
+        if (session.offset < session.data.size) {
+            sendNextOtaChunk(session)
+        } else {
+            logBoth("固件数据发送完毕，请旋钮校验")
+            writeOta(byteArrayOf(OTA_OP_END))
+        }
+    }
+
+    /** 旋钮的 OTA 通知：status(1) + 已收字节数(4)。 */
+    private fun onOtaNotification(value: ByteArray) {
+        val session = ota ?: return
+        if (value.isEmpty()) return
+        val status = value[0].toInt() and 0xFF
+        val received = if (value.size >= 5) getIntLe(value, 1) else -1
+        when (status) {
+            OTA_STATUS_READY -> {
+                session.ready = true
+                armOtaTimeout()
+                if (session.inFlightOp == null) startOtaData(session) // BEGIN 的回执已经先到了
+            }
+            OTA_STATUS_DONE -> {
+                pollHandler.removeCallbacks(otaTimeout)
+                ota = null
+                logBoth("✅ 旋钮校验通过，已切换到新固件，正在重启")
+                onOtaResult?.invoke(true, "旋钮已校验新固件，正在重启")
+            }
+            // 出错时旋钮已经自己放弃了这次升级，不用再发 ABORT
+            else -> failOta("旋钮报错：${otaStatusName(status)}（已收 $received 字节）", sendAbort = false)
+        }
+    }
+
+    private fun failOta(reason: String, sendAbort: Boolean) {
+        val session = ota ?: return
+        pollHandler.removeCallbacks(otaTimeout)
+        ota = null
+        logBoth("❌ OTA 失败：$reason（已发送 ${session.offset}/${session.data.size} 字节），旋钮仍是原来的固件", isWarning = true)
+        // 还有写在飞时发不出去，旋钮那边 20 秒收不到数据会自己放弃（见固件 ble_ota_check_timeout）
+        if (sendAbort && session.inFlightOp == null) writeOta(byteArrayOf(OTA_OP_ABORT))
+        onOtaResult?.invoke(false, reason)
+    }
+
+    private fun armOtaTimeout() {
+        pollHandler.removeCallbacks(otaTimeout)
+        pollHandler.postDelayed(otaTimeout, OTA_TIMEOUT_MS)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeOta(payload: ByteArray) {
+        val g = gatt
+        val char = otaCharacteristic
+        if (g == null || char == null) {
+            if (ota != null) failOta("连接已断开", sendAbort = false)
+            return
+        }
+        armOtaTimeout()
+        ota?.inFlightOp = payload[0]
+        val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeCharacteristic(char, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
+                BluetoothGatt.GATT_SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            @Suppress("DEPRECATION")
+            char.value = payload
+            @Suppress("DEPRECATION")
+            g.writeCharacteristic(char)
+        }
+        if (!ok) {
+            ota?.inFlightOp = null
+            if (ota != null) failOta("writeCharacteristic 发起失败", sendAbort = false)
+        }
+    }
+
+    private fun otaStatusName(status: Int): String = when (status) {
+        OTA_STATUS_ERR_BEGIN -> "无法开始（固件太大或分区不对）"
+        OTA_STATUS_ERR_SEQUENCE -> "数据顺序不对"
+        OTA_STATUS_ERR_WRITE -> "写 flash 失败"
+        OTA_STATUS_ERR_VERIFY -> "校验失败（大小或 SHA-256 不符）"
+        OTA_STATUS_ERR_END -> "固件镜像无效"
+        OTA_STATUS_ERR_FORMAT -> "数据格式不对"
+        else -> "未知错误 0x%02x".format(status)
+    }
+
+    private fun putIntLe(buf: ByteArray, pos: Int, v: Int) {
+        for (i in 0 until 4) buf[pos + i] = (v ushr (8 * i)).toByte()
+    }
+
+    private fun getIntLe(buf: ByteArray, pos: Int): Int =
+        (0 until 4).fold(0) { acc, i -> acc or ((buf[pos + i].toInt() and 0xFF) shl (8 * i)) }
+
     companion object {
         private const val TAG = "BleManager"
 
@@ -622,14 +983,47 @@ class BleManager(context: Context, private val host: KnobHost) {
         private val SERVICE_UUID = UUID.fromString("29afa70d-2312-4f04-9b36-fe9298284756")
         private val KEY_EVENT_CHARACTERISTIC_UUID = UUID.fromString("182f303d-ea98-4ee4-839e-5599aaf3f29d")
         private val DISPLAY_CHARACTERISTIC_UUID = UUID.fromString("5f774e59-5079-4e69-8e5d-de0ee1220d3f")
+        private val OTA_CHARACTERISTIC_UUID = UUID.fromString("468889d4-9176-4aa2-9a9e-cd7dd3ab1ae0")
+
+        // OTA 操作码 / 状态码，与 firmware/src/ble.cpp 的 OTA_OP_* / OTA_STATUS_* 对齐
+        private const val OTA_OP_BEGIN: Byte = 0x01
+        private const val OTA_OP_DATA: Byte = 0x02
+        private const val OTA_OP_END: Byte = 0x03
+        private const val OTA_OP_ABORT: Byte = 0x04
+        private const val OTA_STATUS_READY = 0x00
+        private const val OTA_STATUS_DONE = 0x01
+        private const val OTA_STATUS_ERR_BEGIN = 0x80
+        private const val OTA_STATUS_ERR_SEQUENCE = 0x81
+        private const val OTA_STATUS_ERR_WRITE = 0x82
+        private const val OTA_STATUS_ERR_VERIFY = 0x83
+        private const val OTA_STATUS_ERR_END = 0x84
+        private const val OTA_STATUS_ERR_FORMAT = 0x85
+        // 旋钮写 flash 时擦除扇区会慢一点，单包回执远到不了这个值；超时说明链路卡死了
+        private const val OTA_TIMEOUT_MS = 15_000L
+        private const val OTA_MAX_WRITE_LEN = 512
         // 标准 CCCD 描述符：订阅 NOTIFY 靠写它
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        // 标准设备信息服务及其中的固件版本 / 硬件版本特征值，固件挂在 HID 自带的 0x180A 服务里
+        private val DEVICE_INFO_SERVICE_UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
+        private val FIRMWARE_REVISION_UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+        private val HARDWARE_REVISION_UUID = UUID.fromString("00002a27-0000-1000-8000-00805f9b34fb")
+
+        // 插件用到的全部特征值（服务 UUID 到特征值 UUID；⚠️ 必须写在上面这些 UUID 之后，companion 按顺序初始化），发现服务后缺任何一个都先清一次 GATT 缓存
+        private val REQUIRED_CHARACTERISTICS = listOf(
+            SERVICE_UUID to KEY_EVENT_CHARACTERISTIC_UUID,
+            SERVICE_UUID to DISPLAY_CHARACTERISTIC_UUID,
+            SERVICE_UUID to OTA_CHARACTERISTIC_UUID,
+            DEVICE_INFO_SERVICE_UUID to FIRMWARE_REVISION_UUID,
+            DEVICE_INFO_SERVICE_UUID to HARDWARE_REVISION_UUID,
+        )
 
         // 按键事件字段 ID，与 firmware/src/ble.h 的 KEY_FIELD_CODE/KEY_FIELD_VALUE 数值对齐
         private const val FIELD_CODE = 1
         private const val FIELD_VALUE = 2
 
         private const val RECONNECT_POLL_INTERVAL_MS = 5_000L
+        // 清完 GATT 缓存后等一会儿再重新发现服务，立即发现有可能还是拿到旧结果
+        private const val GATT_REFRESH_DELAY_MS = 500L
         private const val PREFS_NAME = "ble_manager"
         private const val KEY_KNOB_MAC = "knob_mac"
     }

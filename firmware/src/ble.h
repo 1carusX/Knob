@@ -127,3 +127,25 @@ bool ble_has_any_bond();
 // 同步机制），如果想真的测试"从没配对过"这条路径，得手动调这个——
 // 见 main.cpp 里长按 BOOT 键触发的逻辑。
 void ble_clear_all_bonds();
+
+// ==================== 固件 OTA（手机经 BLE 推新固件过来） ====================
+//
+// 协议在 ble.cpp 的 OTA 特征值上（kOtaCharUUID，WRITE+WRITE_ENC+NOTIFY），
+// 收到的数据直接写进另一个 app 分区，校验通过才切换启动分区——中途断线
+// 或者校验失败都不影响当前在跑的固件。main.cpp 只负责显示进度和到点重启。
+
+enum OtaEvent : uint8_t {
+    OTA_EVENT_STARTED,  // 收到 BEGIN，开始接收（received=0）
+    OTA_EVENT_PROGRESS, // 每收到一块数据触发一次
+    OTA_EVENT_DONE,     // 校验通过、已切换启动分区，等着重启
+    OTA_EVENT_FAILED,   // 中止：手机发了 ABORT、校验失败、写 flash 失败或者断线
+};
+
+// 注册 OTA 事件回调。跟其它回调一样跑在 NimBLE 后台任务线程上，只能改
+// 状态变量，不能直接碰 LVGL。收到 OTA_EVENT_DONE 后由调用方负责重启
+// （留一点时间让"完成"通知发出去、屏幕显示出来）。
+void ble_on_ota(void (*callback)(OtaEvent event, uint32_t received, uint32_t total));
+
+// 在 loop() 里反复调用：升级开始后太久没收到数据就放弃（触发 OTA_EVENT_FAILED），
+// 免得手机那边出错又没发 ABORT 时屏幕一直停在升级画面。
+void ble_ota_check_timeout();

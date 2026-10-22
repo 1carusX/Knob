@@ -15,6 +15,14 @@
 #error "必须且只能定义 BOARD_PCB / BOARD_DEVKIT 其中一个（见 platformio.ini 的 env）"
 #endif
 
+// 板子名称，通过 BLE 标准"硬件版本"特征值（0x2A27）上报给插件，插件
+// 据此确认插件包里带的固件是给这块板子编的，不会把 PCB 固件刷进开发板。
+#if defined(BOARD_PCB)
+#define BOARD_NAME "pcb"
+#else
+#define BOARD_NAME "devkit"
+#endif
+
 // --- GC9A01 圆形屏（ESP32-S3 的 SPI2 / FSPI）---
 // SPI 大致可以理解成：CLK（时钟）同步节奏，MOSI 传数据（主控→屏幕），
 // CS 相当于"我在跟你说话"的信号，DC 用来告诉屏幕当前传的字节

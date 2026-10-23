@@ -8,7 +8,7 @@ import java.security.MessageDigest
 import java.util.zip.ZipFile
 
 /**
- * 插件包里带的旋钮固件（见 plugin/build.gradle.kts 的 pluginPackage）。
+ * 插件包里带的旋钮固件（见 plugin/build.gradle.kts 的 pluginPackage<板子> 任务）。
  *
  * 插件包是个 zip：壳导入时原样存成 filesDir/knob/plugin.dex，ART 按文件头
  * 认出 zip 照样加载里面的 classes.dex；但文件名以 .dex 结尾，类加载器不会

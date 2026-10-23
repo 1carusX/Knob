@@ -61,7 +61,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `include/config.h` | 引脚与板子配置（`BOARD_PCB` / `BOARD_DEVKIT`，由 `platformio.ini` 的 env 定义）、板子名 `BOARD_NAME` |
+| `include/config.h` | 引脚与板子配置（`BOARD_PCB`（V1）/ `BOARD_PCB_V2` / `BOARD_DEVKIT`，由 `platformio.ini` 的 env 定义）、板子名 `BOARD_NAME`（`pcb` / `pcb_v2` / `devkit`，插件按它确认固件给哪块板子） |
 | `src/ble.cpp` | 自定义 GATT（按键事件 / 显示同步 / OTA 三个特征值）+ 设备信息服务（固件版本 0x2A26、板子名 0x2A27）；OTA 协议见文件内 OTA 一节和 `docs/项目历程与架构.md` §四 |
 | `src/main.cpp` | LVGL 界面、编码器交互、各状态画面（含"固件升级"进度画面，OTA 完成后到点重启） |
 | `VERSION` / `scripts/version.py` | 人工维护的版本号 + 编译时拼上 git 信息生成 `FW_VERSION`（`0.1.0+<提交>[.dirty.<改动指纹>]`），代码一变版本号就变 |
@@ -107,13 +107,15 @@ cd plugin && ./gradlew pluginDex
 # 插件（本地模拟，不碰真实车控接口）：同样流程 → plugin/output/plugin-simulate.dex
 cd plugin && ./gradlew pluginDexSimulate
 
-# 插件包（插件 + 旋钮固件打成一个 zip，日常分发用这个）：自动先编固件（pio run -e <板子>）再打包
-# → plugin/output/knob-plugin-<板子>-<固件版本>.zip；模拟版是 pluginPackageSimulate → knob-plugin-simulate-…
-# 板子默认 pcb，开发板加 -PknobBoard=devkit；找不到 pio 时用 -Ppio=<路径> 指定
-cd plugin && ./gradlew pluginPackage
+# 插件包（插件 + 旋钮固件打成一个 zip，日常分发用这个）：任务名后缀是板子，要哪块编哪块，
+# 自动先编这块板子的固件（pio run -e <板子>）再打包 → plugin/output/knob-plugin-<板子>-<固件版本>.zip
+# 板子：Pcb（V1）/ PcbV2 / Devkit；模拟版是 pluginPackageSimulate<板子> → knob-plugin-simulate-…
+# 要几块就在一条命令里列几个任务；找不到 pio 时用 -Ppio=<路径> 指定
+cd plugin && ./gradlew pluginPackagePcb
+cd plugin && ./gradlew pluginPackagePcb pluginPackagePcbV2
 
 # 固件 USB 刷写（只在旋钮固件还不支持 OTA、或新固件起不来时需要）
-cd firmware && pio run -e pcb -t upload
+cd firmware && pio run -e pcb -t upload        # V2 板用 -e pcb_v2，开发板用 -e devkit
 ```
 
 - 两个工程均为 Kotlin + JVM target 17；compileSdk / minSdk / targetSdk / build-tools / Kotlin 版本统一在仓库根目录 `gradle/libs.versions.toml`，两个工程共用。

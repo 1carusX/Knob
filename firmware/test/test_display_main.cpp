@@ -2,7 +2,7 @@
 // 顺带验证背光 PWM 调光这条链路（呼吸灯效果，亮度应该平滑忽明忽暗）。
 // 不依赖 LVGL、不依赖编码器——接线只按 docs/旋钮-最小硬件调试方案.md
 // 第 2.1 节接屏幕那几根线即可。
-// 编译烧录：pio run -e test_display_pcb（开发板用 test_display_devkit）-t upload -t monitor
+// 编译烧录：pio run -e test_display_pcb（V2 用 test_display_pcb_v2，开发板用 test_display_devkit）-t upload -t monitor
 
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>

@@ -2,7 +2,7 @@
 
 > 记录从 V1 板（`hardware/V1/`，接线见 `旋钮-最小硬件调试方案.md` §2.3）到 KiCad 重画版 V2 的全部改动。
 > 状态（2026-10-23）：原理图、PCB 和嘉立创生产文件（Gerber、钻孔、BOM、贴片坐标，在 `hardware/V2/production/`）都已完成，ERC/DRC 通过，**尚未打样**。编码器 SW3 和 ESP32 模块 U1 不在贴片 BOM 里，需要自己焊：模块的焊盘全在底部，要预上锡后用加热台回流。定位：模块左边缘在板边内约 0.3mm，天线端伸出板子下边约 0.45mm，熔锡后模块会自动对正。
-> 固件**还没改**，也没有新增板型；下面的引脚号是新板做出来以后 `config.h` 要改成的值。
+> 固件已经加了 V2 板型：宏 `BOARD_PCB_V2`，板子名 `pcb_v2`，PlatformIO env 是 `pcb_v2`（测试程序是 `test_*_pcb_v2`），插件包用 `./gradlew pluginPackagePcbV2`。下面第 2 节的引脚已经写进 `config.h`；V1（`pcb`）仍是默认板型。
 
 KiCad 9 工程：`hardware/V2/knob-v2.kicad_pro`。屏幕、FPC 座、编码器和模组的规格书在 `hardware/V2/docs/`；原理图和 PCB 由 `hardware/V2/scripts/` 里的脚本生成，用法见该目录的 README。
 
@@ -33,7 +33,7 @@ V2 的引脚按布线来分配，不再和 DevKitC 保持一致：
 - LCD 信号从模块右侧按 FPC 引脚顺序引出，全部走顶层，不打过孔；
 - 编码器信号从模块靠近编码器的那一边引出。
 
-| 信号 | `config.h` | V1（`BOARD_PCB`） | DevKitC（`BOARD_DEVKIT`） | **V2** | MINI-1 焊盘 |
+| 信号 | `config.h` | V1（`BOARD_PCB`） | DevKitC（`BOARD_DEVKIT`） | **V2**（`BOARD_PCB_V2`） | MINI-1 焊盘 |
 |------|-----------|---------------------|--------------------------|--------|------------|
 | 屏幕复位 | `TFT_RST` | 9 | 9 | **6** | 10 |
 | 屏幕 MOSI（SDA） | `TFT_MOSI` | 11 | 11 | **7** | 11 |
@@ -53,7 +53,7 @@ V2 的引脚按布线来分配，不再和 DevKitC 保持一致：
 - **SPI 走 GPIO 矩阵。** IO7/IO8 不是 FSPI 的 IO_MUX 专用引脚（专用引脚是 IO11/IO12）。按 ESP-IDF 文档，时钟在 40MHz 及以下时两种方式没有区别；Arduino_GFX 在 ESP32 上默认就是 40MHz。V2 上不要把 SPI 时钟调到 40MHz 以上，除非重新核实。
 - **背光高电平点亮。** `TFT_BLK` 驱动 MOSFET 栅极，高电平亮。因为栅极有下拉，固件主动打开之前屏幕一直是黑的。
 - **编码器方向：** 如果实测旋转方向反了，把 `ENC_PIN_A` 和 `ENC_PIN_B` 对调。
-- **`TFT_ROTATION`** 取决于屏幕实际的安装方向，等第一块板装好后再定。
+- **`TFT_ROTATION`** 取决于屏幕实际的安装方向，`config.h` 里先填了 0，等第一块板装好后用 `test_display_pcb_v2` 实测再定。
 - **启动配置脚：** IO45 和 IO46 必须悬空，这是硬性要求，不能改成别的接法。
   - 不带 PSRAM 的 MINI-1-N8 没有烧 VDD_SPI 的 eFuse。复位时 IO45 如果被上拉，Flash 供电会切到 1.8V，板子就启动不了。
   - V1 在 IO45 上接了上拉还能启动，是因为 N16R8 模块出厂已经烧了这个 eFuse。

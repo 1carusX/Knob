@@ -182,14 +182,6 @@ tasks.register("pluginDexSimulate") {
     }
 }
 
-// ==================== 一次构建两份 ====================
-
-tasks.register("pluginDexAll") {
-    group = "knob"
-    description = "一次构建出 plugin.dex（真实车控）和 plugin-simulate.dex（本地模拟）"
-    dependsOn("pluginDex", "pluginDexSimulate")
-}
-
 // ==================== 插件 + 固件打成一个 zip（给旋钮 OTA 用） ====================
 //
 // 壳的「选择插件」导入后原样存成 filesDir/knob/plugin.dex，ART 按文件头认出
@@ -200,11 +192,15 @@ tasks.register("pluginDexAll") {
 //   firmware/manifest.json   {"version","board","size","sha256"}
 // 产物：output/knob-plugin[-simulate]-<板子>-<固件版本>.zip
 //
-// 打包前先调 PlatformIO 编一遍固件，保证带的是当前代码。参数：
-//   -PknobBoard=pcb|devkit   给哪块板子编固件（默认 pcb）
+// 每块板子一个任务，任务名后缀就是板子，要哪块编哪块（打包前先调 PlatformIO
+// 编一遍这块板子的固件，保证带的是当前代码）：
+//   pluginPackagePcb / pluginPackagePcbV2 / pluginPackageDevkit
+//   pluginPackageSimulatePcb / pluginPackageSimulatePcbV2 / pluginPackageSimulateDevkit
+// 要几块就在一条命令里列几个任务。参数：
 //   -Ppio=<路径>              pio 可执行文件（默认先找 PATH，再找 ~/.platformio/penv）
 
-val knobBoard: String = (findProperty("knobBoard") as String?) ?: "pcb"
+// 跟 firmware/platformio.ini 里主程序的 env 名一一对应
+val knobBoards = listOf("pcb", "pcb_v2", "devkit")
 
 // 只在打包任务真正执行时才找 pio，没装 PlatformIO 的机器照样能跑 pluginDex。
 fun findPio(): File {
@@ -220,9 +216,6 @@ fun findPio(): File {
 }
 
 fun buildFirmware(board: String): File {
-    if (board !in listOf("pcb", "devkit")) {
-        throw GradleException("knobBoard 只能是 pcb 或 devkit，当前是 $board")
-    }
     val firmwareDir = file("../firmware")
     val pb = ProcessBuilder(findPio().absolutePath, "run", "-e", board).directory(firmwareDir)
     pb.redirectErrorStream(true)
@@ -267,16 +260,19 @@ fun packagePlugin(dexFile: File, zipName: String, board: String) {
     println("   固件 $version（$board），${binBytes.size} 字节，sha256=$sha256")
 }
 
-tasks.register("pluginPackage") {
-    group = "knob"
-    description = "插件（真实车控）+ 固件打成 knob-plugin-<板子>-<固件版本>.zip"
-    dependsOn("pluginDex")
-    doLast { packagePlugin(file("output/plugin.dex"), "knob-plugin", knobBoard) }
-}
-
-tasks.register("pluginPackageSimulate") {
-    group = "knob"
-    description = "插件（本地模拟）+ 固件打成 knob-plugin-simulate-<板子>-<固件版本>.zip"
-    dependsOn("pluginDexSimulate")
-    doLast { packagePlugin(file("output/plugin-simulate.dex"), "knob-plugin-simulate", knobBoard) }
+// pcb_v2 -> PcbV2
+for (board in knobBoards) {
+    val suffix = board.split("_").joinToString("") { it.replaceFirstChar(Char::uppercase) }
+    tasks.register("pluginPackage$suffix") {
+        group = "knob"
+        description = "插件（真实车控）+ $board 固件打成 knob-plugin-$board-<固件版本>.zip"
+        dependsOn("pluginDex")
+        doLast { packagePlugin(file("output/plugin.dex"), "knob-plugin", board) }
+    }
+    tasks.register("pluginPackageSimulate$suffix") {
+        group = "knob"
+        description = "插件（本地模拟）+ $board 固件打成 knob-plugin-simulate-$board-<固件版本>.zip"
+        dependsOn("pluginDexSimulate")
+        doLast { packagePlugin(file("output/plugin-simulate.dex"), "knob-plugin-simulate", board) }
+    }
 }

@@ -5,9 +5,12 @@ import android.content.pm.PackageManager
 import android.hardware.IBYDAutoDevice
 import android.hardware.bydauto.ac.AbsBYDAutoAcListener
 import android.hardware.bydauto.ac.BYDAutoAcDevice
+import android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice
 import android.hardware.bydauto.sensor.AbsBYDAutoSensorListener
 import android.hardware.bydauto.sensor.BYDAutoSensorDevice
 import android.hardware.bydauto.setting.BYDAutoSettingDevice
+import android.hardware.bydauto.speed.AbsBYDAutoSpeedListener
+import android.hardware.bydauto.speed.BYDAutoSpeedDevice
 import cn.icarus.knob.api.KnobHost
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -42,6 +45,9 @@ class CarControl(private val logger: KnobHost) {
     private var settingDevice: BYDAutoSettingDevice? = null
     private var acDevice: BYDAutoAcDevice? = null
     private var sensorDevice: BYDAutoSensorDevice? = null
+    private var speedDevice: BYDAutoSpeedDevice? = null
+    private var speedListener: AbsBYDAutoSpeedListener? = null
+    private var bodyworkDevice: BYDAutoBodyworkDevice? = null
 
     // 外部（MainPlugin）想在这些值被语音/按键等车机自身渠道改了之后
     // 实时收到通知，就设这两个回调——CarControl 自己只管注册/解析监听器，
@@ -50,6 +56,13 @@ class CarControl(private val logger: KnobHost) {
     // 线程，MainPlugin 那边要自己切回主线程才能碰 View/knob 同步。
     var onTemperatureChangedExternal: ((area: Int, value: Int) -> Unit)? = null
     var onLightIntensityChangedExternal: ((level: Int) -> Unit)? = null
+
+    // 车速/油门/制动的变化回调——官方文档说这几项的读取和监听都不需要
+    // 权限，先注册上试；回调跟上面几个一样在 AIDL 线程上触发，MainPlugin
+    // 要自己切回主线程。目前还没人订阅，只有自检注册监听器打日志验证。
+    var onSpeedChangedExternal: ((speedKmh: Double) -> Unit)? = null
+    var onAccelerateDeepnessChangedExternal: ((percent: Int) -> Unit)? = null
+    var onBrakeDeepnessChangedExternal: ((percent: Int) -> Unit)? = null
 
     fun log(msg: String) = logger.log(msg)
 
@@ -491,6 +504,181 @@ class CarControl(private val logger: KnobHost) {
         } catch (e: Throwable) {
             log("⚠️ 读取光照等级失败: ${e.message}")
             null
+        }
+    }
+
+    // ==================== 车速 / 油门 / 制动（探测，可能不需要权限） ====================
+
+    /**
+     * 官方文档说车速、油门深度、制动深度的读取和监听都不需要权限。这里
+     * getInstance + enableDevice + 注册监听器，全程 try/catch，任何一步
+     * 抛异常都打日志但不影响后面——目的是在真车上确认到底能不能读到。
+     */
+    fun initSpeedDevice(context: Context): Boolean {
+        return try {
+            speedDevice = BYDAutoSpeedDevice.getInstance(context)
+            if (speedDevice == null) {
+                log("❌ BYDAutoSpeedDevice.getInstance 返回 null")
+                return false
+            }
+            log("✅ 获取 BYDAutoSpeedDevice 实例成功")
+            enableDevice(context, speedDevice!!, "Speed 设备")
+            val listener = speedListener ?: object : AbsBYDAutoSpeedListener() {
+                override fun onSpeedChanged(value: Double) {
+                    log("🔔 [Speed监听] 车速变化 $value km/h")
+                    onSpeedChangedExternal?.invoke(value)
+                }
+                override fun onAccelerateDeepnessChanged(value: Int) {
+                    log("🔔 [Speed监听] 油门深度变化 $value%")
+                    onAccelerateDeepnessChangedExternal?.invoke(value)
+                }
+                override fun onBrakeDeepnessChanged(value: Int) {
+                    log("🔔 [Speed监听] 制动深度变化 $value%")
+                    onBrakeDeepnessChangedExternal?.invoke(value)
+                }
+            }.also { speedListener = it }
+            speedDevice!!.registerListener(listener)
+            log("✅ 已注册 Speed 监听器（踩一下油门/刹车看有没有 🔔 日志）")
+            true
+        } catch (e: Throwable) {
+            log("❌ 初始化 Speed 设备失败: ${e.javaClass.simpleName} - ${e.message}")
+            false
+        }
+    }
+
+    /** 读一次当前车速、油门深度、制动深度，各自独立 try/catch，便于区分哪个能读哪个被拒。 */
+    fun probeSpeed(context: Context) {
+        if (speedDevice == null && !initSpeedDevice(context)) return
+        val dev = speedDevice ?: return
+        try {
+            log("◀ 车速 getCurrentSpeed() = ${dev.getCurrentSpeed()} km/h")
+        } catch (e: Throwable) {
+            log("⚠️ 读车速失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+        try {
+            log("◀ 油门深度 getAccelerateDeepness() = ${dev.getAccelerateDeepness()}%")
+        } catch (e: Throwable) {
+            log("⚠️ 读油门深度失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+        try {
+            log("◀ 制动深度 getBrakeDeepness() = ${dev.getBrakeDeepness()}%")
+        } catch (e: Throwable) {
+            log("⚠️ 读制动深度失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+    }
+
+    // ==================== 车身：车架号 / 车型（需要 bodywork 权限，先探测） ====================
+
+    /**
+     * 车身设备按文档需要 BYDAUTO_BODYWORK 权限（壳暂未声明、签名由用户后续
+     * 处理），所以这里大概率会在 getInstance 或调用时抛权限异常——照样全程
+     * try/catch，把真车上到底是哪一步、什么异常打清楚。
+     */
+    fun initBodyworkDevice(context: Context): Boolean {
+        return try {
+            bodyworkDevice = BYDAutoBodyworkDevice.getInstance(context)
+            if (bodyworkDevice == null) {
+                log("❌ BYDAutoBodyworkDevice.getInstance 返回 null")
+                return false
+            }
+            log("✅ 获取 BYDAutoBodyworkDevice 实例成功")
+            enableDevice(context, bodyworkDevice!!, "Bodywork 设备")
+            true
+        } catch (e: Throwable) {
+            log("❌ 初始化 Bodywork 设备失败: ${e.javaClass.simpleName} - ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * 探测车架号和车型。VIN 优先用反射调 getRealAutoVIN()（官方 jar 里没有
+     * 这个方法、是竞品反编译发现的隐藏接口），没有或失败再退回 jar 里声明
+     * 的 getAutoVIN()。车型同理：先 jar 里的 getAutoModelName()，再反射试
+     * getAutoType()。返回的整数用反射扫 AUTO_MODEL_* / AUTO_TYPE_* 常量
+     * 反查名字（覆盖全部近百个常量，不用手抄）。
+     */
+    fun probeBodywork(context: Context) {
+        if (bodyworkDevice == null && !initBodyworkDevice(context)) return
+        val dev = bodyworkDevice ?: return
+
+        // 先把真车上这个类实际有哪些方法列出来——官方 jar 只是编译桩，真机
+        // 的类可能多出 getRealAutoVIN/getAutoType 这类隐藏方法。
+        listInstanceMethods(dev, "BYDAutoBodyworkDevice")
+
+        // --- 车架号 VIN ---
+        val realVin = callStringByReflection(dev, "getRealAutoVIN")
+        if (realVin != null) {
+            log("◀ 车架号 getRealAutoVIN() = $realVin")
+        } else {
+            try {
+                log("◀ 车架号 getAutoVIN() = ${dev.getAutoVIN()}")
+            } catch (e: Throwable) {
+                log("⚠️ 读车架号失败: ${e.javaClass.simpleName} - ${e.message}")
+            }
+        }
+
+        // --- 车型 ---
+        try {
+            val model = dev.getAutoModelName()
+            log("◀ 车型 getAutoModelName() = $model (${constName("AUTO_MODEL_", model) ?: "未知代码"})")
+        } catch (e: Throwable) {
+            log("⚠️ 读车型 getAutoModelName() 失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+        val autoType = callIntByReflection(dev, "getAutoType")
+        if (autoType != null) {
+            log("◀ 车辆代码 getAutoType() = $autoType (${constName("AUTO_TYPE_", autoType) ?: "未知代码"})")
+        } else {
+            log("ℹ️ 没有 getAutoType() 方法（或调用失败），跳过")
+        }
+    }
+
+    /** 反射调一个无参返回 String 的方法；方法不存在或抛异常都返回 null（异常会打日志）。 */
+    private fun callStringByReflection(device: Any, name: String): String? {
+        return try {
+            val m = device.javaClass.getMethod(name)
+            m.invoke(device) as? String
+        } catch (e: NoSuchMethodException) {
+            null
+        } catch (e: Throwable) {
+            log("⚠️ 反射调 $name() 失败: ${e.cause?.javaClass?.simpleName ?: e.javaClass.simpleName} - ${e.cause?.message ?: e.message}")
+            null
+        }
+    }
+
+    /** 反射调一个无参返回 int 的方法；方法不存在返回 null，调用抛异常也返回 null（打日志）。 */
+    private fun callIntByReflection(device: Any, name: String): Int? {
+        return try {
+            val m = device.javaClass.getMethod(name)
+            (m.invoke(device) as? Number)?.toInt()
+        } catch (e: NoSuchMethodException) {
+            null
+        } catch (e: Throwable) {
+            log("⚠️ 反射调 $name() 失败: ${e.cause?.javaClass?.simpleName ?: e.javaClass.simpleName} - ${e.cause?.message ?: e.message}")
+            null
+        }
+    }
+
+    /** 在 BYDAutoBodyworkDevice 的静态 int 常量里，按前缀找出等于 value 的那个常量名（反查车型代码）。 */
+    private fun constName(prefix: String, value: Int): String? {
+        return try {
+            BYDAutoBodyworkDevice::class.java.fields
+                .firstOrNull { it.name.startsWith(prefix) && it.type == Int::class.javaPrimitiveType && it.getInt(null) == value }
+                ?.name
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    /** 把某个设备实例的所有 public 方法名列出来（排重排序），用来发现官方 jar 没声明的隐藏接口。 */
+    private fun listInstanceMethods(device: Any, label: String) {
+        try {
+            val names = device.javaClass.methods
+                .filter { it.declaringClass.name.startsWith("android.hardware.bydauto") }
+                .map { "${it.name}(${it.parameterTypes.joinToString(",") { p -> p.simpleName }})" }
+                .distinct().sorted()
+            log("🔎 $label 实际方法（${names.size}）: ${names.joinToString(", ")}")
+        } catch (e: Throwable) {
+            log("⚠️ 列 $label 方法失败: ${e.message}")
         }
     }
 

@@ -1,0 +1,8 @@
+# KiCad local state and caches
+*.kicad_prl
+*.lck
+fp-info-cache
+*-backups/
+# generated next to the zip by scripts/fab.py
+production/gerber/
+__pycache__/

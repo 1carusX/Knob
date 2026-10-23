@@ -1,0 +1,401 @@
+(footprint "SW_Alps_SKRTLAE010_Keepout"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Side push button (https://www.alps.com/prod/info/E/PDF/Tact/SurfaceMount/SKRT/SKRT.pdf); F.Cu keep-out under the switch body as the land drawing requires (prohibited area of copper tracks, 2 x 1.2 mm)")
+	(tags "push horizontal SPST 1P1T")
+	(property "Reference" "REF**"
+		(at 0 -2.7 180)
+		(layer "F.SilkS")
+		(uuid "03742767-ac66-41c9-b7b6-9fd77ceb3874")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "SW_Alps_SKRTLAE010_Keepout"
+		(at 0 2.9 0)
+		(layer "F.Fab")
+		(uuid "ed0b25a5-26e3-4f15-8719-d408f2841112")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "e28d4590-aa07-4b7d-8d68-8a78431970bb")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8db38193-296e-4fe2-ae80-eeab9f633106")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -2.4 -1.5)
+		(end -2.4 -0.5)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "24512f57-f4f9-4d1e-88a7-ec2b0af56858")
+	)
+	(fp_line
+		(start -1.8 -1.5)
+		(end -2.4 -1.5)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "43e248d4-ad10-48e0-84ea-20f9da7c7e79")
+	)
+	(fp_line
+		(start -1 1.3)
+		(end 1 1.3)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "2ea27b24-8948-4e9d-9c47-0f721da96693")
+	)
+	(fp_line
+		(start 1.8 -1.5)
+		(end 2.4 -1.5)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "5e109478-8b22-41f6-bc3d-821fd72d167d")
+	)
+	(fp_line
+		(start 2.4 -1.5)
+		(end 2.4 -0.5)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "dbd93f3f-597c-4b52-90a2-f510b3dcb6b1")
+	)
+	(fp_line
+		(start -1 0.3)
+		(end -1 1.5)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "76894c01-008a-422c-baef-5845e16c7236")
+	)
+	(fp_line
+		(start -1 1.5)
+		(end -0.5 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "4327ce08-481c-4385-8c97-aebcf425ba6d")
+	)
+	(fp_line
+		(start -1 1.5)
+		(end 1 1.5)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "0f14712c-34e6-48e8-8a3c-add8a65af7a2")
+	)
+	(fp_line
+		(start -0.5 1.5)
+		(end 0 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "63a6f998-0e77-4281-9fe0-c3fe37fc24f0")
+	)
+	(fp_line
+		(start 0 1.5)
+		(end 0.5 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "3ad1b774-8b40-43f1-b242-31c4e6503460")
+	)
+	(fp_line
+		(start 0.5 1.5)
+		(end 1 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "e6f6147a-44ce-43b8-89dc-7ed80ca065c5")
+	)
+	(fp_line
+		(start 1 0.3)
+		(end -1 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "49d8d894-9018-4349-841b-35026b49d254")
+	)
+	(fp_line
+		(start 1 1.5)
+		(end 1 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "Dwgs.User")
+		(uuid "c9e7b261-e737-466e-80c5-1006d2dafce1")
+	)
+	(fp_line
+		(start -2.83 -2.05)
+		(end -2.83 2.3)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "3d696dda-0672-4ddb-8e44-79d7a7411fba")
+	)
+	(fp_line
+		(start -2.83 -2.05)
+		(end 2.83 -2.05)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "7c802efb-d567-4d54-9861-ac438d402f86")
+	)
+	(fp_line
+		(start -2.83 2.3)
+		(end 2.83 2.3)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "553258c9-850c-48c9-8c2b-347ba45bafda")
+	)
+	(fp_line
+		(start 2.83 -2.05)
+		(end 2.83 2.3)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "cf638838-9d95-4f87-ba03-3d1aaecb7943")
+	)
+	(fp_line
+		(start -2.25 -1.35)
+		(end -2.25 1.21)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "cd7cc8f9-e828-494b-bbca-0357bf7752ae")
+	)
+	(fp_line
+		(start -2.25 -1.35)
+		(end 2.25 -1.35)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "d1212dde-a205-4bc3-b3d0-02946e1550d4")
+	)
+	(fp_line
+		(start -2.25 1.21)
+		(end 2.25 1.21)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "f466271e-c62f-4483-8a8f-5de377a6c739")
+	)
+	(fp_line
+		(start -1 2.04)
+		(end -1 1.21)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "c44d02c4-e9b0-4004-8011-bf1f5231453e")
+	)
+	(fp_line
+		(start -1 2.04)
+		(end 1 2.04)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "1bd98912-4c5c-4b25-a3c6-998478f09151")
+	)
+	(fp_line
+		(start 1 2.04)
+		(end 1 1.21)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "42e3664a-4baf-447f-90ad-470938454791")
+	)
+	(fp_line
+		(start 2.25 -1.35)
+		(end 2.25 1.21)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "d12d53b4-4a50-4d47-82d3-a4f77ed81f29")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(uuid "6ea799ed-68a1-409d-b4a6-70d73abc46c1")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "" np_thru_hole circle
+		(at -2.125 0)
+		(size 0.9 0.9)
+		(drill 0.9)
+		(layers "*.Cu" "*.Mask")
+		(uuid "5492770b-51a7-4556-be13-9d5b96ff9fd5")
+	)
+	(pad "" np_thru_hole circle
+		(at 2.125 0)
+		(size 0.9 0.9)
+		(drill 0.9)
+		(layers "*.Cu" "*.Mask")
+		(uuid "8799e3dd-b406-4711-a483-2b36558829b7")
+	)
+	(pad "1" smd roundrect
+		(at -1.225 -0.9)
+		(size 0.75 1.8)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "0d4514cd-939a-4b8d-ad6a-a45ba42ede98")
+	)
+	(pad "1" smd roundrect
+		(at 1.225 -0.9)
+		(size 0.75 1.8)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "82acf1de-5a83-4137-99ac-4f83ff080d34")
+	)
+	(pad "2" smd roundrect
+		(at 0 -0.9)
+		(size 0.6 1.8)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "f08e27d0-7ce4-46c8-8bf1-71f913a02de1")
+	)
+	(pad "MP" smd roundrect
+		(at -1.85 1.05)
+		(size 1.3 0.9)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "132e804f-c88c-4429-a4da-956d5470458d")
+	)
+	(pad "MP" smd roundrect
+		(at 1.85 1.05)
+		(size 1.3 0.9)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "aaccd8f5-8eff-431d-8dc8-e86c0a552320")
+	)
+	(zone
+		(net 0)
+		(net_name "")
+		(layer "F.Cu")
+		(uuid "%s")
+		(hatch full 0.508)
+		(connect_pads
+			(clearance 0)
+		)
+		(min_thickness 0.254)
+		(filled_areas_thickness no)
+		(keepout
+			(tracks not_allowed)
+			(vias not_allowed)
+			(pads allowed)
+			(copperpour not_allowed)
+			(footprints allowed)
+		)
+		(placement
+			(enabled no)
+			(sheetname "")
+		)
+		(fill
+			(thermal_gap 0.508)
+			(thermal_bridge_width 0.508)
+		)
+		(polygon
+			(pts
+				(xy -1 0.3) (xy 1 0.3) (xy 1 1.5) (xy -1 1.5)
+			)
+		)
+	)
+	(embedded_fonts no)
+	(model "${KICAD9_3DMODEL_DIR}/Button_Switch_SMD.3dshapes/SW_Push_1P1T-MP_NO_Horizontal_Alps_SKRTLAE010.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)

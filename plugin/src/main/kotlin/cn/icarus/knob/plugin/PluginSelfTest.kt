@@ -43,6 +43,13 @@ class PluginSelfTest(
         run("初始化 Setting 设备") { if (!control.initSettingDevice(context)) throw RuntimeException("失败"); "ok" }
         run("初始化 AC 设备") { if (!control.initAcDevice(context)) throw RuntimeException("失败"); "ok" }
 
+        // 车速/油门/制动探测（官方文档说只读+监听不需要权限，试试看）。只读不写，
+        // 注册监听器后踩油门/刹车会在日志里出现 🔔 行。
+        run("探测车速/油门/制动") { control.probeSpeed(context); "见上方" }
+        // 车架号/车型探测（文档说车身设备需要 bodywork 权限，签名后续处理；
+        // 这里先列出真机上有哪些接口，并把权限异常打清楚）。
+        run("探测车架号/车型") { control.probeBodywork(context); "见上方" }
+
         // 座椅通风
         run("座椅通风-低档") { control.setDriverSeatVentilating(context, BYDAutoSettingDevice.SEAT_VENTILATING_LOW)?.toString() ?: throw RuntimeException("null") }
         run("座椅通风-高档") { control.setDriverSeatVentilating(context, BYDAutoSettingDevice.SEAT_VENTILATING_HIGH)?.toString() ?: throw RuntimeException("null") }

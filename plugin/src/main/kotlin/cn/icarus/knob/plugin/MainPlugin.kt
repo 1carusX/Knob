@@ -902,6 +902,35 @@ class MainPlugin : KnobPlugin {
         if (bleConnected) syncToKnob()
     }
 
+    // 自检正在跑（防重复点）。只在主线程读写这个标志（按钮点击 + 结束时
+    // post 回主线程清除），后台线程不碰，所以不用加 volatile。
+    private var selfTestRunning = false
+
+    /**
+     * 跑一键全量自检。⚠️ 必须开后台线程：runAll 里有十几次 Thread.sleep(300)
+     * 和一串阻塞的设备调用，放主线程会卡住 UI 二三十秒直接 ANR。结果全程
+     * 打进日志窗口（车机无 adb，日志是唯一观测手段）。
+     */
+    private fun runSelfTest() {
+        val ctx = appContext ?: return
+        val st = selfTest ?: run { host?.log("❌ 自检未初始化"); return }
+        if (selfTestRunning) { host?.log("⏳ 自检正在进行，请等它跑完"); return }
+        selfTestRunning = true
+        host?.log("🚀 开始自检（后台线程，约 20~30 秒，看日志）")
+        Thread {
+            try {
+                st.runAll(ctx)
+            } catch (e: Throwable) {
+                host?.log("❌ 自检异常: ${e.javaClass.simpleName} - ${e.message}")
+            } finally {
+                mainHandler.post { selfTestRunning = false }
+            }
+        }.start()
+    }
+
+    /** 车控自检按钮——纯车控诊断，跟旋钮连没连无关，连接页/车控页都放一个。 */
+    private fun selfTestButton(ctx: Context): View = Ui.btn(ctx, "🔧 自检") { runSelfTest() }
+
     /**
      * "首页" = 没连上 knob 时强制显示的连接页（见 refreshCurrentPage 的
      * bleConnected 判断），不是可以随便导航过来的菜单。BleManager 后台每
@@ -935,6 +964,8 @@ class MainPlugin : KnobPlugin {
             }
             addView(Ui.space(ctx, 0, 12))
             addView(Ui.btn(ctx, "⏭️ 跳过，直接进车控") { skipToCarControl() })
+            addView(Ui.space(ctx, 0, 8))
+            addView(selfTestButton(ctx))
         }
     }
 
@@ -1046,6 +1077,8 @@ class MainPlugin : KnobPlugin {
                 addView(Ui.space(ctx, 0, 8))
                 addView(firmwareInfoHint(ctx))
             }
+            addView(Ui.space(ctx, 0, 8))
+            addView(selfTestButton(ctx))
         }
     }
 
@@ -1122,6 +1155,8 @@ class MainPlugin : KnobPlugin {
                 addView(Ui.space(ctx, 0, 8))
                 addView(firmwareInfoHint(ctx))
             }
+            addView(Ui.space(ctx, 0, 8))
+            addView(selfTestButton(ctx))
         }
     }
 

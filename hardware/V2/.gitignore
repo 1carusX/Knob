@@ -6,3 +6,5 @@ fp-info-cache
 # generated next to the zip by scripts/fab.py
 production/gerber/
 __pycache__/
+# Python virtualenv for script dependencies (see scripts/README.md)
+.venv/

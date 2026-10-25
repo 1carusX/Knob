@@ -6,10 +6,23 @@
 依赖：KiCad 9（`kicad-cli` 和 `pcbnew` Python 模块）、Python 3 + Pillow（`render.sh` 和 `fab.py` 出 PCB 图用）、
 poppler-utils（`render.sh` 必需；`fab.py` 优先用它，没有就用 Ghostscript）、Java 21+ 和 Freerouting 2.5.0 的 jar
 （https://github.com/freerouting/freerouting/releases ，64 MB，不放进工程）。交互式 BOM 要装
-InteractiveHtmlBom：`pip install --user --break-system-packages InteractiveHtmlBom`（要用装了 KiCad 的那个系统
-Python，它依赖 `pcbnew` 模块）。
+InteractiveHtmlBom，装进工程自己的虚拟环境 `.venv/`（已在 `.gitignore`），不往系统 Python 里装：
 
 ```
+uv venv --python /usr/bin/python3 --system-site-packages .venv
+uv pip install --python .venv/bin/python --no-deps InteractiveHtmlBom
+uv pip install --python .venv/bin/python "jsonschema>=4.1"
+```
+
+- 解释器必须是装了 KiCad 的系统 Python：`pcbnew` 是发行版 `kicad` 包带的 C 扩展，按系统 Python 编译，
+  uv/pyenv 自己下载的 Python 加载不了。`--system-site-packages` 让虚拟环境能看到它（还有系统的 wxPython、Pillow）。
+- `--no-deps`：InteractiveHtmlBom 声明依赖 `wxpython`，uv 不把系统 site-packages 算作已满足，会去 PyPI 下载
+  wxPython 源码包现场编译（很慢且多半失败）。系统已经有 `python3-wxgtk4.0`，所以跳过依赖，只单独补上 `jsonschema`。
+
+跑脚本前先激活虚拟环境，`python3` 和 `generate_interactive_bom` 就都指向 `.venv/` 里的：
+
+```
+source .venv/bin/activate
 FREEROUTING=~/opt/freerouting-2.5.0.jar scripts/build.sh
 python3 scripts/fab.py production
 ```

@@ -2,7 +2,7 @@
 
 > 目标车机的「蓝牙物理旋钮配件」DIY 项目。
 >
-> **硬件端**：ESP32-S3 + 圆形屏 + 旋转编码器，通过自定义 BLE GATT 服务上报"转/点/长按"事件，同时接收车况显示数据。
+> **硬件端**：ESP32-S3 + 圆形屏 + 旋转编码器，通过自定义 BLE GATT 服务上报单击/双击/长按事件（转动只在旋钮本地生效），同时接收车况显示数据，并支持经蓝牙升级固件（OTA）。
 > **车机端**：Android App（壳 + DEX 热加载插件），解析旋钮事件并翻译成车控动作（空调 / 座椅通风加热），同时把车况回显给旋钮屏幕。
 
 ## 核心思路
@@ -15,12 +15,13 @@ flowchart LR
         DEX["plugin.dex<br/>全部车控/业务逻辑，可热更新"]
         SHELL -- DexClassLoader --> DEX
     end
-    HW <-- "自定义 BLE GATT<br/>双向：事件 / 回显" --> SHELL
+    HW <-- "自定义 BLE GATT<br/>双向：事件 / 回显 / 固件 OTA" --> DEX
 ```
 
 - **硬件 = 旋钮**，不知道也不关心自己在控制什么，只管上报事件、显示手机推来的数据。
 - **App = 大脑**，负责事件→动作映射，执行车控，并把结果回显给旋钮屏幕。
-- **壳只签名一次**，后续所有代码更新通过下发 `plugin.dex` 完成，避免反复"上传→签名→装车"。
+- **壳只签名一次**，只负责加载插件、日志和权限申请；BLE 连接、车控、界面全在插件里，后续所有代码更新通过下发插件完成，避免反复"上传→签名→装车"。
+- **插件包顺带升级旋钮**：插件和旋钮固件打成一个 zip 分发，插件连上旋钮发现固件版本不一样就自动 OTA，旋钮装在车上不用再拆下来插电脑。
 
 （最初计划走标准 BLE HID 键盘 + 无障碍服务捕获按键，实测目标车机没有暴露无障碍服务开关入口、这条路走不通，现已替换为上面这套自定义 GATT 方案，详见 `docs/项目历程与架构.md`。）
 
@@ -29,21 +30,27 @@ flowchart LR
 ```
 ├── app/                 # 壳 App（Android 工程，cn.icarus.knob）
 │   ├── 使用与验证指南.md  # App 用法 / 实车验证步骤说明书
-│   └── app/src/main/java/cn/icarus/knob/
-│       ├── api/          # 壳↔DEX 契约：KnobPlugin / KnobHost / Ui
-│       ├── plugin/       # PluginLoader：发现并加载 plugin.dex
-│       ├── ble/          # BleManager：自定义 BLE GATT 连接管理与编解码
-│       ├── host/         # KnobHostImpl：壳向插件提供的能力
-│       ├── util/         # 日志（LogSink）/ CrashHandler
-│       └── KnobActivity / KnobApp / BootReceiver
+│   └── app/src/
+│       ├── byd/ · generic/  # 按平台分的 flavor：权限声明 + PlatformConfig
+│       └── main/java/cn/icarus/knob/
+│           ├── api/          # 壳↔DEX 契约：KnobPlugin / KnobHost / Ui
+│           ├── plugin/       # PluginLoader：导入并加载 plugin.dex
+│           ├── host/         # KnobHostImpl：壳向插件提供的能力（只剩日志）
+│           ├── util/         # 日志（LogSink）/ CrashHandler
+│           └── KnobActivity / KnobApp / BootReceiver / RuntimePerm
 ├── plugin/               # 插件工程（编译产出 output/plugin.dex，可反复更新）
-│   └── src/main/kotlin/cn/icarus/knob/
-│       ├── api/               # 与壳完全相同的契约副本（改动须两边同步）
-│       └── plugin/
-│           ├── MainPlugin.kt      # KnobPlugin 接口实现（入口 + 交互状态机）
-│           ├── CarControl.kt      # 车控引擎（BYDAUTO 调用）
-│           └── PluginSelfTest.kt  # 一键全量自检
-├── firmware/             # 旋钮固件（PlatformIO，ESP32-S3+GC9A01+EC11，含自定义 BLE GATT 通信）
+│   └── src/main/
+│       ├── flags-real/ · flags-simulate/  # BuildFlags.kt：真实车控 / 模拟两个变体
+│       └── kotlin/cn/icarus/knob/
+│           ├── api/               # 与壳完全相同的契约副本（改动须两边同步）
+│           └── plugin/
+│               ├── MainPlugin.kt      # KnobPlugin 接口实现（入口 + 交互状态机）
+│               ├── BleManager.kt      # 自定义 BLE GATT：扫描配对、重连、按键/显示编解码、固件 OTA
+│               ├── FirmwareBundle.kt  # 从插件包里读出并校验旋钮固件
+│               ├── CarControl.kt      # 车控引擎（BYDAUTO 调用）
+│               └── PluginSelfTest.kt  # 一键全量自检
+├── firmware/             # 旋钮固件（PlatformIO，ESP32-S3+GC9A01+EC11，含自定义 BLE GATT 通信和 OTA）
+├── hardware/             # 旋钮 PCB（KiCad）：V1 / V2
 ├── store/                # 应用商店素材（图标 + 预览图）
 └── docs/                 # 全部分析知识 / 方案
     ├── INDEX.md          # ← 文档索引（先读这个）
@@ -55,14 +62,18 @@ flowchart LR
 ## 快速开始
 
 ```bash
-# 壳 App → app/app/build/outputs/apk/release/app-release-unsigned.apk
-cd app && ./gradlew assembleRelease
+# 壳 App（比亚迪车机）→ app/app/build/outputs/apk/bydRelease/app-byd-release-unsigned.apk
+cd app && ./gradlew assembleBydRelease
 
-# 插件 → plugin/output/plugin.dex（SDK 版本见根目录 gradle/libs.versions.toml，SDK 路径自动探测）
+# 插件包（插件 + 旋钮固件）→ plugin/output/knob-plugin-<板子>-<固件版本>.zip
+# 板子：Pcb（V1）/ PcbV2 / Devkit；需要 PlatformIO（pio）
+cd plugin && ./gradlew pluginPackagePcb
+
+# 只要插件、不带固件 → plugin/output/plugin.dex（SDK 版本见根目录 gradle/libs.versions.toml，SDK 路径自动探测）
 cd plugin && ./gradlew pluginDex
 ```
 
-装车流程：U 盘安装壳 APK（需车机厂商签名版）→ 打开壳点「📥 选择插件」，用文件选择器选中 `plugin.dex`（自动拷进 App 私有目录，之后每次启动自动加载）→ 右半边出现插件页面即成功。详见 `app/使用与验证指南.md`。
+装车流程：U 盘安装壳 APK（需车机厂商签名版）→ 打开壳点「📥 选择插件」，用文件选择器选中插件包 zip 或 `plugin.dex`（自动拷进 App 私有目录，之后每次启动自动加载）→ 右半边出现插件页面即成功。导入的是插件包时，插件连上旋钮会自动给旋钮升级固件。更多构建变体（`generic` 壳、模拟版插件）见 `AGENTS.md` §4，装车细节见 `app/使用与验证指南.md`。
 
 ## 关键事实（已验证）
 

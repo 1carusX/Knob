@@ -2,6 +2,7 @@ package cn.icarus.knob.plugin
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.pm.PermissionInfo
 import android.hardware.IBYDAutoDevice
 import android.hardware.bydauto.ac.AbsBYDAutoAcListener
 import android.hardware.bydauto.ac.BYDAutoAcDevice
@@ -546,25 +547,35 @@ class CarControl(private val logger: KnobHost) {
         }
     }
 
-    /** 读一次当前车速、油门深度、制动深度，各自独立 try/catch，便于区分哪个能读哪个被拒。 */
-    fun probeSpeed(context: Context) {
-        if (speedDevice == null && !initSpeedDevice(context)) return
-        val dev = speedDevice ?: return
+    /**
+     * 读一次当前车速、油门深度、制动深度，各自独立 try/catch，便于区分哪个能读哪个被拒。
+     * 设备初始化失败、或者三项一个都没读到就抛异常——自检靠异常判定失败，
+     * 以前这里把异常全吞了，真车上初始化就被拒，自检还照样报通过。
+     */
+    fun probeSpeed(context: Context): String {
+        if (speedDevice == null && !initSpeedDevice(context)) throw IllegalStateException("初始化 Speed 设备失败，见上方")
+        val dev = speedDevice ?: throw IllegalStateException("初始化 Speed 设备失败，见上方")
+        var ok = 0
         try {
             log("◀ 车速 getCurrentSpeed() = ${dev.getCurrentSpeed()} km/h")
+            ok++
         } catch (e: Throwable) {
             log("⚠️ 读车速失败: ${e.javaClass.simpleName} - ${e.message}")
         }
         try {
             log("◀ 油门深度 getAccelerateDeepness() = ${dev.getAccelerateDeepness()}%")
+            ok++
         } catch (e: Throwable) {
             log("⚠️ 读油门深度失败: ${e.javaClass.simpleName} - ${e.message}")
         }
         try {
             log("◀ 制动深度 getBrakeDeepness() = ${dev.getBrakeDeepness()}%")
+            ok++
         } catch (e: Throwable) {
             log("⚠️ 读制动深度失败: ${e.javaClass.simpleName} - ${e.message}")
         }
+        if (ok == 0) throw IllegalStateException("车速/油门/制动一项都没读到，见上方")
+        return "读到 $ok/3 项"
     }
 
     // ==================== 车身：车架号 / 车型（需要 bodywork 权限，先探测） ====================
@@ -596,31 +607,36 @@ class CarControl(private val logger: KnobHost) {
      * 的 getAutoVIN()。车型同理：先 jar 里的 getAutoModelName()，再反射试
      * getAutoType()。返回的整数用反射扫 AUTO_MODEL_* / AUTO_TYPE_* 常量
      * 反查名字（覆盖全部近百个常量，不用手抄）。
+     * 跟 probeSpeed 一样：初始化失败、或车架号和车型都没读到就抛异常，
+     * 否则返回读到了什么，给自检当结果显示。
      */
-    fun probeBodywork(context: Context) {
-        if (bodyworkDevice == null && !initBodyworkDevice(context)) return
-        val dev = bodyworkDevice ?: return
+    fun probeBodywork(context: Context): String {
+        if (bodyworkDevice == null && !initBodyworkDevice(context)) throw IllegalStateException("初始化 Bodywork 设备失败，见上方")
+        val dev = bodyworkDevice ?: throw IllegalStateException("初始化 Bodywork 设备失败，见上方")
 
         // 先把真车上这个类实际有哪些方法列出来——官方 jar 只是编译桩，真机
         // 的类可能多出 getRealAutoVIN/getAutoType 这类隐藏方法。
         listInstanceMethods(dev, "BYDAutoBodyworkDevice")
 
         // --- 车架号 VIN ---
-        val realVin = callStringByReflection(dev, "getRealAutoVIN")
-        if (realVin != null) {
-            log("◀ 车架号 getRealAutoVIN() = $realVin")
+        var vin: String? = callStringByReflection(dev, "getRealAutoVIN")
+        if (vin != null) {
+            log("◀ 车架号 getRealAutoVIN() = $vin")
         } else {
             try {
-                log("◀ 车架号 getAutoVIN() = ${dev.getAutoVIN()}")
+                vin = dev.getAutoVIN()
+                log("◀ 车架号 getAutoVIN() = $vin")
             } catch (e: Throwable) {
                 log("⚠️ 读车架号失败: ${e.javaClass.simpleName} - ${e.message}")
             }
         }
 
         // --- 车型 ---
+        var modelLabel: String? = null
         try {
             val model = dev.getAutoModelName()
-            log("◀ 车型 getAutoModelName() = $model (${constName("AUTO_MODEL_", model) ?: "未知代码"})")
+            modelLabel = "$model (${constName("AUTO_MODEL_", model) ?: "未知代码"})"
+            log("◀ 车型 getAutoModelName() = $modelLabel")
         } catch (e: Throwable) {
             log("⚠️ 读车型 getAutoModelName() 失败: ${e.javaClass.simpleName} - ${e.message}")
         }
@@ -630,6 +646,9 @@ class CarControl(private val logger: KnobHost) {
         } else {
             log("ℹ️ 没有 getAutoType() 方法（或调用失败），跳过")
         }
+
+        if (vin == null && modelLabel == null) throw IllegalStateException("车架号和车型都没读到，见上方")
+        return listOfNotNull(vin?.let { "车架号=$it" }, modelLabel?.let { "车型=$it" }).joinToString("，")
     }
 
     /** 反射调一个无参返回 String 的方法；方法不存在或抛异常都返回 null（异常会打日志）。 */
@@ -682,22 +701,153 @@ class CarControl(private val logger: KnobHost) {
         }
     }
 
-    fun checkBydPermissions(context: Context) {
+    /** 逐个检查壳声明的 BYDAUTO 权限，返回没授权的那些（空列表 = 全部已授权）。 */
+    fun checkBydPermissions(context: Context): List<String> {
         val perms = listOf(
             "android.permission.BYDAUTO_SETTING_GET",
             "android.permission.BYDAUTO_SETTING_SET",
             "android.permission.BYDAUTO_SETTING_COMMON",
             "android.permission.BYDAUTO_AC_GET",
             "android.permission.BYDAUTO_AC_SET",
-            "android.permission.BYDAUTO_AC_COMMON"
+            "android.permission.BYDAUTO_AC_COMMON",
+            // 车速、车身设备实车初始化时被拒，probeBydPermissions 查到这两个
+            // 都是 dangerous 级，壳声明后点按钮运行时申请。
+            "android.permission.BYDAUTO_SPEED_COMMON",
+            "android.permission.BYDAUTO_BODYWORK_COMMON"
             // Sensor 不需要单独申请权限，开发文档里写明了，不在这里列。
         )
         val pm = context.packageManager
-        perms.forEach { perm ->
+        return perms.filter { perm ->
             val granted = try {
                 pm.checkPermission(perm, context.packageName) == PackageManager.PERMISSION_GRANTED
             } catch (e: Throwable) { false }
             log(if (granted) "✅ $perm 已授权" else "❌ $perm 未授权")
+            !granted
         }
+    }
+
+    // ==================== 车机定义的全部 BYDAUTO 权限（探测，只读） ====================
+
+    /**
+     * 列出车机上定义的全部 BYDAUTO_* 权限和保护级别，用来确认车速/车身等设备
+     * 到底要哪个权限、是 dangerous（运行时申请即可）还是 signature（只能靠签名）。
+     * 只读，不申请任何东西。
+     *
+     * Android 没有"列出全部权限"的 API，三路合起来按名字去重：
+     * 1. 包声明的权限：android 包 + getInstalledPackages 能看到的包。壳没有
+     *    QUERY_ALL_PACKAGES，Android 11+ 只看得到一部分包，可见包个数打进日志。
+     * 2. 按权限组查：每个权限组 + null（不属于任何组的）。
+     * 3. 按命名规律猜：设备名 × GET/SET/COMMON 逐个 getPermissionInfo，
+     *    这一路不受包可见性限制。设备名来自 docs/项目历程与架构.md 第七节的
+     *    HAL 设备清单，加几个常见别名。
+     * 每一路单独 try/catch，一路出错不影响其它路。返回找到的权限个数。
+     */
+    fun probeBydPermissions(context: Context): Int {
+        val pm = context.packageManager
+        val found = sortedMapOf<String, PermissionInfo>()
+        fun collect(infos: Array<PermissionInfo>?): Int {
+            var n = 0
+            infos?.forEach { p ->
+                if (p.name?.contains("BYDAUTO") == true) {
+                    found.putIfAbsent(p.name, p)
+                    n++
+                }
+            }
+            return n
+        }
+
+        // 1. 包声明的权限
+        var fromPackages = 0
+        var visiblePackages = 0
+        try {
+            fromPackages += collect(pm.getPackageInfo("android", PackageManager.GET_PERMISSIONS).permissions)
+        } catch (e: Throwable) {
+            log("⚠️ 读 android 包声明的权限失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+        try {
+            val pkgs = pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)
+            visiblePackages = pkgs.size
+            pkgs.forEach { fromPackages += collect(it.permissions) }
+        } catch (e: Throwable) {
+            log("⚠️ 遍历已安装包声明的权限失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+
+        // 2. 按权限组查
+        var fromGroups = 0
+        try {
+            val groups = pm.getAllPermissionGroups(0).map { it.name } + listOf<String?>(null)
+            groups.forEach { g ->
+                try {
+                    fromGroups += collect(pm.queryPermissionsByGroup(g, 0).toTypedArray())
+                } catch (e: Throwable) {
+                    log("⚠️ 查权限组 $g 失败: ${e.javaClass.simpleName} - ${e.message}")
+                }
+            }
+        } catch (e: Throwable) {
+            log("⚠️ 列权限组失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+
+        // 3. 按命名规律猜
+        var fromGuess = 0
+        try {
+            val devices = listOf(
+                "AC", "BODYWORK", "AUDIO", "LIGHT", "ENERGY", "INSTRUMENT", "PM2P5", "PM25",
+                "CHARGING", "GEARBOX", "ENGINE", "SPEED", "STATISTIC", "TYRE", "SETTING", "TIME",
+                "RADAR", "PANORAMA", "DOORLOCK", "SENSOR", "SAFETYBELT", "MULTIMEDIA", "ADAS",
+                "VERSION", "OTA", "POWER"
+            )
+            devices.forEach { d ->
+                listOf("GET", "SET", "COMMON").forEach { s ->
+                    try {
+                        val p = pm.getPermissionInfo("android.permission.BYDAUTO_${d}_$s", 0)
+                        found.putIfAbsent(p.name, p)
+                        fromGuess++
+                    } catch (e: PackageManager.NameNotFoundException) {
+                        // 没有这个权限，静默跳过
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            log("⚠️ 按名猜权限失败: ${e.javaClass.simpleName} - ${e.message}")
+        }
+
+        log("🔎 车机定义的 BYDAUTO 权限共 ${found.size} 个（可见包 $visiblePackages 个；来源：包声明 $fromPackages、权限组 $fromGroups、按名猜中 $fromGuess）")
+        found.forEach { (name, p) ->
+            val granted = try {
+                pm.checkPermission(name, context.packageName) == PackageManager.PERMISSION_GRANTED
+            } catch (e: Throwable) { false }
+            @Suppress("DEPRECATION")
+            val level = protectionName(p.protectionLevel)
+            log("  ${if (granted) "✅" else "⛔"} ${name.removePrefix("android.permission.")} 级别=$level 定义包=${p.packageName}")
+        }
+        return found.size
+    }
+
+    /** 把 PermissionInfo.protectionLevel 翻译成可读名字，比如 signature|privileged(18)。 */
+    @Suppress("DEPRECATION")
+    private fun protectionName(level: Int): String {
+        val base = when (level and PermissionInfo.PROTECTION_MASK_BASE) {
+            0 -> "normal"
+            1 -> "dangerous"
+            2 -> "signature"
+            3 -> "signatureOrSystem"
+            4 -> "internal"
+            else -> "base0x${(level and PermissionInfo.PROTECTION_MASK_BASE).toString(16)}"
+        }
+        val flagNames = listOf(
+            0x10 to "privileged", 0x20 to "development", 0x40 to "appop", 0x80 to "pre23",
+            0x100 to "installer", 0x200 to "verifier", 0x400 to "preinstalled", 0x800 to "setup",
+            0x1000 to "instant", 0x2000 to "runtimeOnly"
+        )
+        var rest = level and PermissionInfo.PROTECTION_MASK_FLAGS
+        val parts = mutableListOf(base)
+        flagNames.forEach { (bit, name) ->
+            if (rest and bit != 0) {
+                parts += name
+                rest = rest and bit.inv()
+            }
+        }
+        if (rest != 0) parts += "0x${rest.toString(16)}"
+        return "${parts.joinToString("|")}($level)"
     }
 }

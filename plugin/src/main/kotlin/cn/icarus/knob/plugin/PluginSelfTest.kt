@@ -38,17 +38,29 @@ class PluginSelfTest(
         }
 
         // 权限
-        run("权限检查") { control.checkBydPermissions(context); "见上方" }
+        run("权限检查") {
+            val missing = control.checkBydPermissions(context)
+            if (missing.isNotEmpty()) throw IllegalStateException("缺 ${missing.size} 个权限: ${missing.joinToString(", ") { it.removePrefix("android.permission.") }}")
+            "全部已授权"
+        }
+        // 列出车机上定义的全部 BYDAUTO 权限和保护级别，确认车速/车身等设备要
+        // 哪个权限、能不能运行时申请。一个都没找到说明探测方法本身不灵，算失败。
+        run("列出车机 BYDAUTO 权限") {
+            val n = control.probeBydPermissions(context)
+            if (n == 0) throw IllegalStateException("一个 BYDAUTO 权限都没找到")
+            "$n 个"
+        }
         // 初始化
         run("初始化 Setting 设备") { if (!control.initSettingDevice(context)) throw RuntimeException("失败"); "ok" }
         run("初始化 AC 设备") { if (!control.initAcDevice(context)) throw RuntimeException("失败"); "ok" }
 
         // 车速/油门/制动探测（官方文档说只读+监听不需要权限，试试看）。只读不写，
-        // 注册监听器后踩油门/刹车会在日志里出现 🔔 行。
-        run("探测车速/油门/制动") { control.probeSpeed(context); "见上方" }
+        // 注册监听器后踩油门/刹车会在日志里出现 🔔 行。初始化失败或一项都没
+        // 读到时 probeSpeed 会抛异常，这里如实计为失败。
+        run("探测车速/油门/制动") { control.probeSpeed(context) }
         // 车架号/车型探测（文档说车身设备需要 bodywork 权限，签名后续处理；
-        // 这里先列出真机上有哪些接口，并把权限异常打清楚）。
-        run("探测车架号/车型") { control.probeBodywork(context); "见上方" }
+        // 这里先列出真机上有哪些接口，并把权限异常打清楚）。同样失败会抛异常。
+        run("探测车架号/车型") { control.probeBodywork(context) }
 
         // 座椅通风
         run("座椅通风-低档") { control.setDriverSeatVentilating(context, BYDAutoSettingDevice.SEAT_VENTILATING_LOW)?.toString() ?: throw RuntimeException("null") }

@@ -50,12 +50,14 @@ flowchart LR
 │               ├── CarControl.kt      # 车控引擎（BYDAUTO 调用）
 │               └── PluginSelfTest.kt  # 一键全量自检
 ├── firmware/             # 旋钮固件（PlatformIO，ESP32-S3+GC9A01+EC11，含自定义 BLE GATT 通信和 OTA）
+│   └── simulate/         # 电脑上用真 LVGL 渲染屏幕截图/动画（CMake），改界面不用烧板子
 ├── hardware/             # 旋钮 PCB（KiCad）：V1 / V2
 ├── store/                # 应用商店素材（图标 + 预览图）
 └── docs/                 # 全部分析知识 / 方案
     ├── INDEX.md          # ← 文档索引（先读这个）
     ├── 项目历程与架构.md   # 完整发展历程 + 当前架构/协议/交互设计
     ├── 验证结论.md        # 实车验证事实清单（持续更新）
+    ├── 设计/旋钮圆屏UI/    # 圆屏界面设计稿（PNG/HTML + 规格），由 gen.mjs 生成
     └── ROADMAP.md        # 路线图与当前状态
 ```
 

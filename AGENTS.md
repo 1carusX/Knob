@@ -65,7 +65,8 @@
 | `src/ble.cpp` | 自定义 GATT（按键事件 / 显示同步 / OTA 三个特征值）+ 设备信息服务（固件版本 0x2A26、板子名 0x2A27）；OTA 协议见文件内 OTA 一节和 `docs/项目历程与架构.md` §四 |
 | `src/main.cpp` | LVGL 界面、编码器交互、各状态画面（含"固件升级"进度画面，OTA 完成后到点重启） |
 | `VERSION` / `scripts/version.py` | 人工维护的版本号 + 编译时拼上 git 信息生成 `FW_VERSION`（`0.1.0+<提交>[.dirty.<改动指纹>]`），代码一变版本号就变 |
-| `src/fonts/` | LVGL 字体（中文 `font_zh_36` 只收录用到的字，新增上屏中文要重新生成） |
+| `src/fonts/` | LVGL 字体（数字 Barlow Semi Condensed、中文 Noto Sans SC，只收录用到的字，新增上屏中文要把三份 `font_zh_*` 都重新生成；`font_num_92/80/44` 是等宽数字，重新生成前要先用同目录 `freeze_tnum.mjs`（Node，不装包）把 tnum 字形固化进字体，否则拧动时数字会左右跳；做法见 `docs/设计/旋钮圆屏UI/README.md`「固件实现」）。同目录 `OFL-*.txt` 是两款字体的许可证（SIL OFL 1.1），字体子集随固件分发就必须带着，不能删 |
+| `simulate/` | 电脑上的屏幕模拟（CMake 工程）：`render.cpp` 直接 `#include "../src/main.cpp"`，把 Arduino/屏幕/旋钮/BLE 换成假实现，用真 LVGL 渲染各状态截图和动画 PNG（APNG 由 render 自己写，不依赖图像库）；改界面先在这里对照设计稿，不用烧板子 |
 
 > 新增车控功能 = 只改插件（`CarControl.kt` 加方法 + `MainPlugin.kt` 加一条 `when` 分支）+ 重新 `pluginDex`，**壳不用动、不用重签**。
 
@@ -114,6 +115,11 @@ cd plugin && ./gradlew pluginDexSimulate
 cd plugin && ./gradlew pluginPackagePcb
 cd plugin && ./gradlew pluginPackagePcb pluginPackagePcbV2
 
+# 旋钮屏幕截图（电脑上用真正的 src/main.cpp + LVGL 渲染各状态，不用烧板子）→ firmware/simulate/out/*.png
+# 需要 CMake 和 firmware/lib/lvgl 子模块已初始化（或 cmake -B build -DLVGL_DIR=<同版本 LVGL 路径>）；原理见 firmware/simulate/render.cpp 开头
+cd firmware/simulate && cmake -B build && cmake --build build -j        # 第一次要先 cmake -B build 配置，之后只跑 --build
+cd firmware/simulate && cmake --build build -j --target anim            # 动画（转圈、长按提交、固件升级、BOOT 清配对）→ out/anim/
+
 # 固件 USB 刷写（只在旋钮固件还不支持 OTA、或新固件起不来时需要）
 cd firmware && pio run -e pcb -t upload        # V2 板用 -e pcb_v2，开发板用 -e devkit
 ```
@@ -123,6 +129,7 @@ cd firmware && pio run -e pcb -t upload        # V2 板用 -e pcb_v2，开发板
 - 工程未配 `signingConfig`，`assembleRelease` 只产出 **unsigned** APK；装车前需用车机厂商签名单独签。
 - 命令行构建需先设 `JAVA_HOME`（本机无系统级 JDK，可用 Gradle 已 provision 的 `~/.gradle/jdks/jetbrains_s_r_o_-21-amd64-linux.2`）；Android Studio 内构建会自带 JBR。
 - `local.properties`、`build/`、`.gradle/` 不入库（见 `.gitignore`）；克隆后 Android Studio 会自动重建 `local.properties`。
+- 旋钮屏幕模拟（`firmware/simulate/`）要 CMake、gcc/g++ 和 zlib 开发头文件，没有别的依赖（没装 CMake 就 `sudo apt install cmake`）。重新生成字体（`npx lv_font_conv@1.5.3`、`freeze_tnum.mjs`）和设计稿（`docs/设计/旋钮圆屏UI/gen.mjs`）要 Node，都只用 Node 自带模块；设计稿截图还要 chromium。固件这边唯一的 Python 是 PlatformIO 的构建钩子 `firmware/scripts/version.py`（PlatformIO 只认 Python）。
 
 ## 5. 插件分发与加载
 

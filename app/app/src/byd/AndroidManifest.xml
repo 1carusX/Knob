@@ -4,14 +4,36 @@
      BYDAUTO 权限（基座 manifest 里也没有，不能靠删除实现，见 main 的说明）。
      座椅通风在 Setting 设备，空调在 AC 设备。
      *_GET/*_SET 为 signature 级（车机厂商签名装车即授）；
-     *_COMMON 为 dangerous 级（运行时申请，见 KnobActivity + PlatformConfig）。 -->
+     *_COMMON 为 dangerous 级（运行时申请，见 KnobActivity + PlatformConfig）。
+     其中 20 个 *_COMMON 是插件 probeBydPermissions 在实车（DiLink 5.0，Android 12）
+     上列出的全部 BYDAUTO 权限，均为 dangerous、定义包=android。一次全部声明，
+     以后插件用到哪个设备只需运行时申请，不用为加一行声明重签壳。
+     按权限名字母顺序排列，新增时插到对应位置。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.BYDAUTO_SETTING_GET" />
-    <uses-permission android:name="android.permission.BYDAUTO_SETTING_SET" />
-    <uses-permission android:name="android.permission.BYDAUTO_SETTING_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_AC_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_AC_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_AC_SET" />
-    <uses-permission android:name="android.permission.BYDAUTO_AC_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_AUDIO_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_CHARGING_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_DOOR_LOCK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENERGY_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENGINE_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_LIGHT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_MULTIMEDIA_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_PANORAMA_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_PM2P5_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_RADAR_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SAFETY_BELT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_TIME_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_TYRE_COMMON" />
 
 </manifest>

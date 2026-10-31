@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 固定浅色主题（AppCompat，不依赖 Material），避免车机暗色模式下文字看不清 -->
-    <style name="Theme.Knob" parent="Theme.AppCompat.Light.DarkActionBar" />
+    <!-- 固定深色主题（AppCompat，不依赖 Material），不跟着车机的深浅色模式变：
+         颜色全部自己定死，系统切换模式时界面不会被反色，文字始终看得清。
+         没有 ActionBar，顶栏是布局里自己画的。 -->
+    <style name="Theme.Knob" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/surface_bar</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorAccent">@color/toggle_on_text</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:textColorHighlight">#5A2563EB</item>
+    </style>
 </resources>

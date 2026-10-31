@@ -32,7 +32,7 @@ class KnobApp : Application() {
                 // 插件加载成功后 init（传入 host，插件日志转发到壳显示）
                 it.init(applicationContext, KnobHostImpl)
                 LogSink.append("✅ 插件已加载并初始化")
-            } ?: LogSink.append("⚠️ 未加载插件，请在主界面点「选择插件」导入 plugin.dex")
+            } ?: LogSink.append("⚠️ 未加载插件，请在主界面点「导入插件」选择插件包")
         } catch (e: Throwable) {
             LogSink.append("❌ 插件加载异常: ${e.javaClass.simpleName} - ${e.message}")
         }

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 壳界面配色，跟旋钮圆屏同一套（docs/设计/旋钮圆屏UI/README.md 的规格），
+     设计稿见 docs/设计/壳界面/README.md。 -->
+<resources>
+    <color name="bg">#0A0C0F</color>              <!-- 窗口底色 -->
+    <color name="surface">#12161B</color>         <!-- 插件区 -->
+    <color name="surface_bar">#0F1216</color>     <!-- 顶栏、日志面板 -->
+    <color name="surface_button">#1A1F26</color>  <!-- 次要按钮 -->
+    <color name="divider">#1F242B</color>
+    <color name="border">#2B313A</color>
+    <color name="chip_border">#232830</color>
+    <color name="text">#F2F4F7</color>
+    <color name="text_body">#C9CED6</color>       <!-- 日志正文、次要按钮字 -->
+    <color name="text_secondary">#8A93A0</color>  <!-- 时间戳、说明 -->
+    <color name="text_muted">#4A515C</color>
+    <color name="primary">#2563EB</color>         <!-- 主按钮 -->
+    <color name="toggle_on">#15233A</color>       <!-- 按下的开关按钮 -->
+    <color name="toggle_on_border">#2D4D82</color>
+    <color name="toggle_on_text">#A9C4F5</color>
+    <color name="ok">#34D399</color>
+    <color name="warn">#F7C948</color>
+    <color name="error">#F0414D</color>
+    <color name="error_text">#FF7A82</color>      <!-- 深底上的错误文字 -->
+    <color name="alert_bg">#2A1418</color>        <!-- 要处理的状态胶囊 -->
+    <color name="alert_border">#6B2A33</color>
+    <color name="alert_text">#FFB3B9</color>
+    <color name="ripple">#26FFFFFF</color>
+    <color name="scrim">#8C000000</color>
+</resources>

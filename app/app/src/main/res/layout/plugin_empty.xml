@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 插件区的占位：还没导入插件时显示。插件 ui.bind 时会 removeAllViews 清掉它。 -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp">
+
+        <FrameLayout
+            android:layout_width="88dp"
+            android:layout_height="88dp"
+            android:background="@drawable/bg_empty_icon">
+
+            <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_import"
+                android:tint="@color/text_secondary" />
+        </FrameLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:fontFamily="sans-serif-medium"
+            android:text="还没有导入插件"
+            android:textColor="@color/text"
+            android:textSize="24sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="车控和旋钮连接都在插件里，导入一次之后每次开机自动加载"
+            android:textColor="@color/text_secondary"
+            android:textSize="15sp" />
+
+        <!-- 宽度在 KnobActivity 里按插件区实际宽度设（最多 440dp），手机上不超出 -->
+        <LinearLayout
+            android:id="@+id/emptySteps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:orientation="vertical">
+
+            <LinearLayout style="@style/KnobStep">
+                <TextView style="@style/KnobStepNumber" android:text="1" />
+                <TextView style="@style/KnobStepText" android:text="把插件包（knob-plugin-*.zip）拷到 U 盘" />
+            </LinearLayout>
+
+            <LinearLayout style="@style/KnobStep" android:layout_marginTop="8dp">
+                <TextView style="@style/KnobStepNumber" android:text="2" />
+                <TextView style="@style/KnobStepText" android:text="点下面的按钮，在文件选择器里选中它" />
+            </LinearLayout>
+
+            <LinearLayout style="@style/KnobStep" android:layout_marginTop="8dp">
+                <TextView style="@style/KnobStepNumber" android:text="3" />
+                <TextView style="@style/KnobStepText" android:text="立即加载；包里带的旋钮固件会自动升级" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnImportBig"
+            android:layout_width="wrap_content"
+            android:layout_height="56dp"
+            android:layout_marginTop="28dp"
+            android:background="@drawable/bg_btn_primary"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingStart="32dp"
+            android:paddingEnd="32dp">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_import"
+                android:tint="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="导入插件"
+                android:textColor="#FFFFFF"
+                android:textSize="18sp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

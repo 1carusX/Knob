@@ -32,18 +32,17 @@
 
 | 文件 | 职责 |
 |------|------|
-| `app/src/byd/java/cn/icarus/knob/PlatformConfig.kt`、`app/src/generic/java/cn/icarus/knob/PlatformConfig.kt` | 同包同名对象，仅 `byd` 一份非空：`runtimePerms`（需要按钮申请的 dangerous 权限）+ `statusPermissions`（状态日志要打印的全部权限）。跟 `plugin/` 的 `BuildFlags.kt` 是同一个"同路径两份、值不同"套路 |
+| `app/src/byd/java/cn/icarus/knob/PlatformConfig.kt`、`app/src/generic/java/cn/icarus/knob/PlatformConfig.kt` | 同包同名对象，仅 `byd` 一份非空：`statusPermissions`（状态日志要打印的全部权限）。车控权限的运行时申请不在壳里，归插件（见 `MainPlugin.kt` 一行）。跟 `plugin/` 的 `BuildFlags.kt` 是同一个"同路径两份、值不同"套路 |
 | `app/src/byd/AndroidManifest.xml` | manifest overlay，编译期合入基座，声明 114 个 `BYDAUTO_*` 权限：实车列出的全部 20 个 `*_COMMON`（均为 dangerous 级），加上按 `BYDAUTO_<设备>_GET/SET` 命名补全的各设备 GET/SET（signature 级，车机上查不到定义）。`PlatformConfig.statusPermissions` 与它一一对应；`generic` 没有这份文件、也就没有这些权限 |
-| `app/src/main/java/cn/icarus/knob/RuntimePerm.kt` | `PlatformConfig.runtimePerms` 元素的通用数据类（`perm`/`icon`/`label`），本身不含平台字符串 |
 | `app/src/main/java/cn/icarus/knob/api/KnobPlugin.kt` | 壳↔DEX 契约接口（四功能域，见下） |
 | `app/src/main/java/cn/icarus/knob/api/KnobHost.kt` | 插件反向调壳的能力：只剩 `log`——BLE 连接整体归插件自己的 `BleManager` 管，不再经壳转发 |
-| `app/src/main/java/cn/icarus/knob/api/Ui.kt` | 纯代码构建 View 的工具（插件无资源，只能走代码 UI） |
+| `app/src/main/java/cn/icarus/knob/api/Ui.kt` | 纯代码构建 View 的工具（插件无资源，只能走代码 UI）：深色样式，跟壳界面同一套颜色，尺寸按 dp。运行时用的是壳里这份，改了要换壳；新插件不考虑配旧壳 |
 | `app/src/main/java/cn/icarus/knob/plugin/PluginLoader.kt` | 从私有目录 `filesDir/knob/plugin.dex` 加载；`importDex()` 把用户选中的 dex 拷进私有目录；换新实例前调旧实例 `onDestroy()`（插件自己持有 BLE 连接，不清理会泄漏） |
 | `app/src/main/java/cn/icarus/knob/host/KnobHostImpl.kt` | `KnobHost` 实现：`log()` 转发到 LogSink，仅此而已 |
 | `app/src/main/java/cn/icarus/knob/BootReceiver.kt` | 监听 `BOOT_COMPLETED`/`QUICKBOOT_POWERON`，仅记日志确认车机走的是哪条开机路径 |
-| `app/src/main/java/cn/icarus/knob/KnobActivity.kt` | 主界面：左列日志 + 按钮（选择插件/清空日志/保存日志 + `PlatformConfig` 动态生成的权限申请按钮行）；右列 `pluginContainer` 经 `ui.bind` 交给插件，`onDestroy` 发 `ui.unbind`；`dispatchKeyEvent` 把系统按键（如返回键）转发给插件 |
+| `app/src/main/java/cn/icarus/knob/KnobActivity.kt` | 主界面（设计见 `docs/设计/壳界面/`）：顶栏（插件 / 蓝牙权限状态胶囊，蓝牙没授权时点它申请；导入插件；日志开关）+ 插件区 `pluginContainer`（经 `ui.bind` 交给插件）+ 日志面板（按级别上色、只看警告和错误、自动滚动、未读错误角标）。布局按窗口宽度分两档：`res/layout-w960dp/` 宽（日志是右侧面板），`res/layout/` 窄（车机半屏、手机：日志是底部条 + 抽屉）；不用 `sw600dp`，半屏时它会误用宽布局。`onDestroy` 发 `ui.unbind`；`onRequestPermissionsResult` 把不是壳自己发起的申请结果经 `perm.result` 转给插件；`dispatchKeyEvent` 把系统按键（如返回键）转发给插件 |
 | `app/src/main/java/cn/icarus/knob/KnobApp.kt` | Application：进程启动时**同步**加载插件、调用 `init`（必然早于 Activity.onCreate，`ui.bind` 才能命中）。不碰 BLE——连不连、什么时候连是插件自己的决定 |
-| `app/src/main/java/cn/icarus/knob/util/LogSink.kt` / `CrashHandler.kt` | 日志（车机无 adb，App 内 TextView 即唯一观测手段）与崩溃兜底 |
+| `app/src/main/java/cn/icarus/knob/util/LogSink.kt` / `CrashHandler.kt` | 日志（车机无 adb，App 内日志面板即唯一观测手段；每条有级别：调用方可以明确传，不传按内容里的 ❌/⚠/✅ 猜；界面按级别上色、筛选、数未读错误，只追加新来的行不整段重画）与崩溃兜底 |
 
 ### 插件 `plugin/`（纯 JVM + Kotlin，产物 `plugin/output/plugin.dex`）
 
@@ -136,7 +135,7 @@ cd firmware && pio run -e pcb -t upload        # V2 板用 -e pcb_v2，开发板
 **不走外部存储路径**（避免 Android 11+ 的分区存储限制，也不需要存储权限）：
 
 1. 编译出插件包 `plugin/output/knob-plugin-<板子>-<版本>.zip`（或纯 `plugin.dex`，那样就不带固件、不会升级旋钮），拷到 U 盘/车机任意可见位置。
-2. 壳里点「📥 选择插件」→ SAF 文件选择器选中它。
+2. 壳里点顶栏「导入插件」→ SAF 文件选择器选中它。
 3. `PluginLoader.importDex()` 先删旧文件（旧的是只读的，不删无法覆盖）→ 拷进私有目录 `filesDir/knob/plugin.dex` → `setReadOnly()`（W^X 要求）→ `DexClassLoader` 加载（parent = 壳 classLoader）、实例化 `cn.icarus.knob.plugin.MainPlugin`、调 `init`，随后 Activity 发 `ui.bind` 交出容器。
 4. 之后每次启动由 `KnobApp` 自动从私有目录加载，无需再选。更新插件 = 重复步骤 1-2 覆盖。
 
@@ -157,7 +156,7 @@ cd firmware && pio run -e pcb -t upload        # V2 板用 -e pcb_v2，开发板
 1. **`plugin-simulate.dex`**（`SIMULATE_CAR_CONTROL = true`）：不碰真实 BYDAUTO 接口，先在无签名机器上验证按键路由、BLE GATT 链路、插件页面栈这条完整链路。
 2. **`plugin.dex`**（`SIMULATE_CAR_CONTROL = false`）：接真实车控接口，需要车机厂商签名版壳才能拿到 signature 级权限，装车联调用。
 
-壳只需要签名一次（已通过官方开发者认证流程拿到），两个插件变体之后都通过「选择插件」重复导入切换，不用重新签名、重新装车。日志窗口（`LogSink`）是唯一观测手段，所有操作/返回码都要打进去。
+壳只需要签名一次（已通过官方开发者认证流程拿到），两个插件变体之后都通过「导入插件」重复导入切换，不用重新签名、重新装车。日志窗口（`LogSink`）是唯一观测手段，所有操作/返回码都要打进去。
 
 ## 7. 约定
 

@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 柔和浅橙圆角按钮背景 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <solid android:color="#FFF3E0" />
-    <corners android:radius="14dp" />
-    <stroke android:width="1dp" android:color="#FFCC80" />
-</shape>

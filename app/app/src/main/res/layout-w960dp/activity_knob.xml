@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 宽布局：Knob 窗口宽度 >= 960dp（车机全屏）。按窗口宽度选、不按屏幕：
+     车机分屏时窗口只有半个屏幕宽（约 640dp），落到 layout/ 那份窄布局。
+     以前用 sw600dp（最小宽度）判断，半屏时最小宽度 640 仍 >= 600，会套用
+     左右各半的宽布局，插件只剩 320dp。
+     插件区在左（离驾驶员近），日志是右侧可收起的面板；收起后最新一条日志
+     显示在顶栏。两份布局的控件 id 一致（只在一边有的 ViewBinding 里是可空的），
+     KnobActivity 共用一份代码。设计稿见 docs/设计/壳界面/README.md。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:orientation="vertical">
+
+    <!-- ==================== 顶栏 ==================== -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:background="@color/surface_bar"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp">
+
+        <ImageView
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/ic_knob_mark" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:fontFamily="sans-serif-condensed"
+            android:text="Knob"
+            android:textColor="@color/text"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:background="@color/chip_border" />
+
+        <LinearLayout
+            android:id="@+id/pluginChip"
+            style="@style/KnobChip">
+
+            <View
+                android:id="@+id/pluginDot"
+                style="@style/KnobChipDot" />
+
+            <TextView
+                android:id="@+id/pluginChipText"
+                style="@style/KnobChipText" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btChip"
+            style="@style/KnobChip"
+            android:layout_marginStart="12dp">
+
+            <View
+                android:id="@+id/btDot"
+                style="@style/KnobChipDot" />
+
+            <TextView
+                android:id="@+id/btChipText"
+                style="@style/KnobChipText" />
+
+            <TextView
+                android:id="@+id/btGrant"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="-8dp"
+                android:background="@drawable/bg_pill_error"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="授权"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- 日志面板收起时，最新一条日志显示在这里 -->
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="16dp"
+            android:layout_weight="1">
+
+            <TextView
+                android:id="@+id/logTicker"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_gravity="end|center_vertical"
+                android:background="@drawable/bg_ticker"
+                android:ellipsize="end"
+                android:fontFamily="monospace"
+                android:gravity="center_vertical"
+                android:maxWidth="440dp"
+                android:maxLines="1"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:textSize="12.5sp"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:id="@+id/btnImport"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_marginStart="16dp"
+            android:background="@drawable/bg_btn_secondary"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp">
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_import"
+                android:tint="@color/text" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="导入插件"
+                android:textColor="@color/text"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnLog"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_marginStart="12dp"
+            android:background="@drawable/bg_btn_secondary"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp">
+
+            <ImageView
+                android:id="@+id/btnLogIcon"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_log" />
+
+            <TextView
+                android:id="@+id/btnLogText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="日志"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/logBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="22dp"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="-4dp"
+                android:background="@drawable/bg_badge"
+                android:fontFamily="sans-serif-condensed"
+                android:gravity="center"
+                android:minWidth="22dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/divider" />
+
+    <!-- ==================== 插件区 + 日志面板 ==================== -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal"
+        android:padding="16dp">
+
+        <FrameLayout
+            android:id="@+id/pluginContainer"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="@drawable/bg_panel">
+
+            <include
+                android:id="@+id/emptyState"
+                layout="@layout/plugin_empty" />
+        </FrameLayout>
+
+        <include
+            android:id="@+id/logPanel"
+            layout="@layout/log_panel"
+            android:layout_width="400dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="16dp" />
+    </LinearLayout>
+</LinearLayout>

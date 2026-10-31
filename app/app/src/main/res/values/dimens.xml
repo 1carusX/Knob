@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- 权限按钮行内单个按钮的高度（竖屏布局用 60dp；大屏见 values-sw600dp） -->
-    <dimen name="perm_cell_height">60dp</dimen>
-</resources>

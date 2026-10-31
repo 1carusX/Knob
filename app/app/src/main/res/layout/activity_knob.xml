@@ -1,186 +1,210 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 默认布局：手机竖屏（也是没有其它限定符能命中时的兜底，包括折叠屏
-     折起来的窄屏）。上下堆叠，插件容器拿大头空间（权重 7），日志/按钮
-     这个开发调试面板缩到下面一小块（权重 3），日志区自己再滚动。
-     另一份变体：
-       layout-sw600dp/   大屏（车机宽屏、折叠屏展开后，不管方向）：
-                         左右分栏，跟这份用的是同一套 view id/控件类型，
-                         ViewBinding 才能共用同一个 ActivityKnobBinding，
-                         KnobActivity.kt 不用为不同屏幕分别写代码。
-                         折叠屏展开后哪怕还是竖屏方向，只要最小宽度
-                         >=600dp 就会优先命中它而不是这份——sw600dp
-                         这个尺寸限定符比方向限定符优先级更高。
-     改这份文件时留意 layout-sw600dp 是不是也要跟着改。 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- 窄布局：Knob 窗口宽度 < 960dp——车机分屏（半屏约 640dp）、手机竖屏，也是
+     没有其它限定符命中时的兜底。宽布局见 layout-w960dp。
+     插件区占满宽度；日志收成底部一条（最新一条 + 未读错误数），点一下拉成
+     抽屉盖住插件区下半部分。顶栏的状态胶囊只写"插件""蓝牙"，导入按钮只留
+     图标。控件 id 跟宽布局一致，KnobActivity 共用一份代码。 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="8dp">
+    android:background="@color/bg">
 
-    <!-- ==================== 上：插件页面容器（未加载时显示占位符） ==================== -->
-    <FrameLayout
-        android:id="@+id/pluginContainer"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="7"
-        android:background="#FFFFFF">
-
-        <!-- 占位符：插件 bindContainer 渲染时会 removeAllViews 清掉它 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:orientation="vertical">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="🎛️"
-                android:textSize="56sp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="插件页面"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:textColor="#1A237E"
-                android:layout_marginTop="12dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="加载并选择插件后，这里将显示插件的内容"
-                android:textSize="12sp"
-                android:textColor="#888888"
-                android:layout_marginTop="6dp" />
-        </LinearLayout>
-    </FrameLayout>
-
-    <!-- ==================== 下：日志 + 按钮（开发调试面板） ==================== -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="3"
-        android:orientation="vertical"
-        android:paddingTop="8dp">
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
-        <!-- 日志区（占满调试面板的剩余高度，自己滚动） -->
-        <TextView
-            android:id="@+id/tvLog"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:textSize="12sp"
-            android:fontFamily="monospace"
-            android:textIsSelectable="true"
-            android:background="#F5F5F5"
-            android:textColor="#1A1A1A"
-            android:textColorHighlight="#4D4D4D"
-            android:padding="8dp"
-            android:scrollbars="vertical"
-            android:gravity="top" />
-
-        <!-- 按钮区：三个可爱 emoji 大按钮 -->
+        <!-- ==================== 顶栏 ==================== -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="64dp"
+            android:background="@color/surface_bar"
+            android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingTop="6dp">
+            android:paddingStart="20dp"
+            android:paddingEnd="12dp">
+
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_knob_mark" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:fontFamily="sans-serif-condensed"
+                android:text="Knob"
+                android:textColor="@color/text"
+                android:textSize="22sp"
+                android:textStyle="bold" />
 
             <LinearLayout
-                android:id="@+id/btnPickPlugin"
-                android:layout_width="0dp"
-                android:layout_height="72dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="@drawable/bg_btn_blue"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
+                android:id="@+id/pluginChip"
+                style="@style/KnobChip"
+                android:layout_marginStart="12dp">
+
+                <View
+                    android:id="@+id/pluginDot"
+                    style="@style/KnobChipDot" />
 
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="📥"
-                    android:textSize="30sp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="选择插件"
-                    android:textSize="11sp"
-                    android:textColor="#1565C0"
-                    android:layout_marginTop="2dp" />
+                    android:id="@+id/pluginChipText"
+                    style="@style/KnobChipText" />
             </LinearLayout>
 
             <LinearLayout
-                android:id="@+id/btnClearLog"
-                android:layout_width="0dp"
-                android:layout_height="72dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="@drawable/bg_btn_orange"
-                android:clickable="true"
-                android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
+                android:id="@+id/btChip"
+                style="@style/KnobChip"
+                android:layout_marginStart="8dp">
+
+                <View
+                    android:id="@+id/btDot"
+                    style="@style/KnobChipDot" />
 
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="🧹"
-                    android:textSize="30sp" />
+                    android:id="@+id/btChipText"
+                    style="@style/KnobChipText" />
 
                 <TextView
+                    android:id="@+id/btGrant"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="清空日志"
-                    android:textSize="11sp"
-                    android:textColor="#E65100"
-                    android:layout_marginTop="2dp" />
+                    android:layout_height="26dp"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="-8dp"
+                    android:background="@drawable/bg_pill_error"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="授权"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
             </LinearLayout>
 
-            <LinearLayout
-                android:id="@+id/btnSaveLog"
+            <Space
                 android:layout_width="0dp"
-                android:layout_height="72dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_green"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/btnImport"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_btn_secondary"
                 android:clickable="true"
+                android:contentDescription="导入插件"
                 android:focusable="true"
-                android:foreground="?attr/selectableItemBackground"
-                android:gravity="center"
-                android:orientation="vertical">
+                android:gravity="center">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="💾"
-                    android:textSize="30sp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="保存日志"
-                    android:textSize="11sp"
-                    android:textColor="#2E7D32"
-                    android:layout_marginTop="2dp" />
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/ic_import"
+                    android:tint="@color/text" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 权限申请按钮行：子按钮由 KnobActivity 按 PlatformConfig 动态生成
-             （一行内平分；各平台带哪些权限、图标/文案全由 PlatformConfig 决定，
-             布局里不写死任何平台专属权限）。颜色随权限状态变化（见
-             KnobActivity.updatePermButtonState）。 -->
-        <LinearLayout
-            android:id="@+id/permContainer"
+        <View
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="1dp"
+            android:background="@color/divider" />
+
+        <!-- ==================== 插件区 ==================== -->
+        <FrameLayout
+            android:id="@+id/pluginContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="12dp"
+            android:layout_marginEnd="12dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_panel">
+
+            <include
+                android:id="@+id/emptyState"
+                layout="@layout/plugin_empty" />
+        </FrameLayout>
+
+        <!-- ==================== 底部日志条：最新一条，点开是抽屉 ==================== -->
+        <LinearLayout
+            android:id="@+id/logStrip"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_margin="12dp"
+            android:background="@drawable/bg_log_strip"
+            android:clickable="true"
+            android:contentDescription="展开日志"
+            android:focusable="true"
+            android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:layout_marginTop="6dp" />
+            android:paddingStart="16dp"
+            android:paddingEnd="8dp">
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_log"
+                android:tint="@color/text_secondary" />
+
+            <TextView
+                android:id="@+id/logTicker"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:fontFamily="monospace"
+                android:maxLines="1"
+                android:textSize="12.5sp" />
+
+            <TextView
+                android:id="@+id/logBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="22dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_badge"
+                android:fontFamily="sans-serif-condensed"
+                android:gravity="center"
+                android:minWidth="22dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:importantForAccessibility="no"
+                android:padding="10dp"
+                android:src="@drawable/ic_chevron_up"
+                android:tint="@color/text_body" />
+        </LinearLayout>
     </LinearLayout>
-</LinearLayout>
+
+    <!-- 抽屉拉开时盖在插件区上的遮罩，点一下收起；顶栏不盖 -->
+    <View
+        android:id="@+id/logScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="65dp"
+        android:background="@color/scrim"
+        android:clickable="true"
+        android:contentDescription="收起日志"
+        android:focusable="false"
+        android:visibility="gone" />
+
+    <!-- 高度在 KnobActivity 里按窗口高度设（约六成） -->
+    <include
+        android:id="@+id/logPanel"
+        layout="@layout/log_panel"
+        android:layout_width="match_parent"
+        android:layout_height="430dp"
+        android:layout_gravity="bottom"
+        android:visibility="gone" />
+</FrameLayout>

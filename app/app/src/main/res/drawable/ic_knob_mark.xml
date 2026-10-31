@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 顶栏的标识：旋钮外圈 + 正上方一根绿色刻线 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp" android:height="28dp"
+    android:viewportWidth="28" android:viewportHeight="28">
+    <path android:pathData="M14,3a11,11 0,1 1,0 22a11,11 0,1 1,0 -22z"
+        android:strokeColor="#F2F4F7" android:strokeWidth="2" />
+    <path android:pathData="M14,6.5V11"
+        android:strokeColor="#34D399" android:strokeWidth="2.4" android:strokeLineCap="round" />
+</vector>

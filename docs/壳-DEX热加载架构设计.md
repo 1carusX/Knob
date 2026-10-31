@@ -71,7 +71,7 @@ interface KnobPlugin {
 插件只存放在 App 私有目录，**不读写外部存储**（规避 Android 11+ 分区存储限制，也无需存储权限）。
 
 ```
-首次导入（KnobActivity 点「📥 选择插件」）
+首次导入（KnobActivity 点顶栏「导入插件」）
   → SAF 文件选择器返回 content Uri
   → PluginLoader.importDex()
       → delete() 旧文件（旧文件是只读的，不删无法覆盖）
@@ -97,7 +97,7 @@ KnobActivity.onDestroy
 （待实测：车机定制系统开机后是否自动恢复无障碍服务的启用状态。）
 
 ## 分发方式
-- 编译出 `plugin/output/plugin.dex` → 拷到 U 盘 → 车机上用壳的「选择插件」导入
+- 编译出 `plugin/output/plugin.dex` → 拷到 U 盘 → 车机上用壳的「导入插件」导入
 - 改逻辑 → 重新 `pluginDex` → 重新导入覆盖 → 生效（壳不用重装、不用重签）
 
 ## 插件 DEX 的编译

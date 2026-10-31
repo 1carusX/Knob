@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 壳界面反复用到的几种控件样式（设计稿 docs/设计/壳界面/README.md）。 -->
+<resources>
+
+    <!-- 只有图标的按钮：44dp 见方（触控目标下限），图标 20dp -->
+    <style name="KnobIconButton">
+        <item name="android:layout_width">44dp</item>
+        <item name="android:layout_height">44dp</item>
+        <item name="android:padding">12dp</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:background">@drawable/bg_icon_btn</item>
+        <item name="android:tint">@color/text_body</item>
+    </style>
+
+    <!-- 顶栏的状态胶囊（插件 / 蓝牙权限） -->
+    <style name="KnobChip">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">36dp</item>
+        <item name="android:orientation">horizontal</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:paddingStart">14dp</item>
+        <item name="android:paddingEnd">14dp</item>
+        <item name="android:background">@drawable/bg_chip</item>
+    </style>
+
+    <style name="KnobChipDot">
+        <item name="android:layout_width">8dp</item>
+        <item name="android:layout_height">8dp</item>
+    </style>
+
+    <style name="KnobChipText">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">8dp</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:maxLines">1</item>
+    </style>
+
+    <!-- 日志面板的筛选标签（全部 / 警告和错误） -->
+    <style name="KnobSegment">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">32dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+
+    <!-- 空状态的三步说明 -->
+    <style name="KnobStep">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:orientation">horizontal</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:padding">14dp</item>
+        <item name="android:background">@drawable/bg_step</item>
+    </style>
+
+    <style name="KnobStepNumber">
+        <item name="android:layout_width">28dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">20sp</item>
+        <item name="android:fontFamily">sans-serif-condensed</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/toggle_on_text</item>
+    </style>
+
+    <style name="KnobStepText">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:lineSpacingMultiplier">1.3</item>
+        <item name="android:textColor">@color/text_body</item>
+    </style>
+</resources>

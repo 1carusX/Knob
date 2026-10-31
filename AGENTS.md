@@ -48,11 +48,11 @@
 
 | 文件 | 职责 |
 |------|------|
-| `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域路由 + 自管页面栈 |
+| `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域路由 + 自管页面栈 + 启动自检（`runStartupCheck`：`init` 时只读检查 `CarControl.PERM_GROUPS` 里 `required` 的功能权限齐不齐、设备能不能初始化，通过才 `bleManager.start()` 连旋钮、显示车控页；没通过固定显示启动自检页，列出缺的权限和申请按钮，授权后自动重查）+ 车控权限：只由用户在启动自检页 / 自检页点「申请」按钮申请（`requestPermissionsByButton`，借壳 Activity 弹窗，结果经 `perm.result` 回来）；调温、调座椅等车控操作前只用 `hasPermissions` 查，缺了就不执行、记一笔，不会顺带弹窗 |
 | `src/main/kotlin/cn/icarus/knob/plugin/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道（自定义 GATT，不是标准 HID）：认哪个设备、扫描/配对、断线重连轮询、按键 NOTIFY 解码、显示数据 WRITE 编码，全部归插件自己管，不经壳。还负责读旋钮固件版本（标准 0x180A 服务）和固件 OTA 发送。生命周期绑定插件实例——重新导入 `plugin.dex` 会连带断开当前 BLE 连接（`MainPlugin` 通过 `onKeyEvent`/`onConnectionStateChanged`/`onCandidateFound`/`onFirmwareInfo`/`onOtaProgress`/`onOtaResult` 等回调属性接收事件，不是接口方法） |
 | `src/main/kotlin/cn/icarus/knob/plugin/FirmwareBundle.kt` | 从壳存下的插件包（zip）里读出 `firmware/firmware.bin` 并按 `manifest.json` 校验大小和 SHA-256；`MainPlugin.maybeStartOta` 据此决定要不要自动升级旋钮 |
 | `src/main/kotlin/cn/icarus/knob/plugin/CarControl.kt` | 车控引擎：BYDAUTO 设备初始化 / 空调（温度·开关·风量·风向·循环·分控）/ 座椅通风·加热 / 环境光传感器读取 |
-| `src/main/kotlin/cn/icarus/knob/plugin/PluginSelfTest.kt` | 一键全量自检 |
+| `src/main/kotlin/cn/icarus/knob/plugin/PluginSelfTest.kt` | 一键全量自检：逐项回调结果，`MainPlugin` 的自检页（叠在停靠点上，返回键关闭）据此逐项显示，跑完列出现有功能缺的权限和申请按钮 |
 | `src/main/kotlin/cn/icarus/knob/api/` | 与壳 `api/` 逐字节相同的三个契约文件（KnobPlugin / KnobHost / Ui） |
 | `src/main/flags-real/…/BuildFlags.kt`、`src/main/flags-simulate/…/BuildFlags.kt` | 同路径两份文件，只有 `SIMULATE_CAR_CONTROL` 值不同，分别参与 `main`/`simulate` source set 编译（见 §6） |
 
@@ -77,7 +77,7 @@
 fun init(context: Context, host: KnobHost)
 fun onCommand(command: String, params: Map<String, Any>): Map<String, Any>?  // 写：init.all / seat.ventilating / ac.*
 fun onQuery(query: String, params: Map<String, Any>): Map<String, Any>?      // 读：perm.check / selfTest / seat.ventilating / ac.temperature
-fun onEvent(event: String, params: Map<String, Any>): Boolean                // 事件：key / ui.bind / ui.unbind
+fun onEvent(event: String, params: Map<String, Any>): Boolean                // 事件：key / ui.bind / ui.unbind / perm.result
 fun onPush(type: String, data: Map<String, Any>)                             // 壳主动推：state / bluetooth / hardware / config
 fun onDestroy()
 ```
@@ -89,6 +89,8 @@ fun onDestroy()
 **UI 绑定也走事件域**，接口不为它单开方法：
 - `onEvent("ui.bind", {"container": ViewGroup})` —— `KnobActivity.onCreate` 把右半边容器交给插件，插件开始渲染并自管页面栈。
 - `onEvent("ui.unbind", {})` —— `KnobActivity.onDestroy` 通知插件断开对该容器/View 树的持有。
+
+**运行时权限也走事件域**：壳 manifest 声明全部权限，插件**只在用户点按钮时申请**，不一次性全申请，也不在用功能时弹窗：启动自检没通过时启动自检页按功能给申请按钮（授权后自动重查），自检页跑完按 `CarControl.PERM_GROUPS` 逐个功能列出 COMMON 和签名级 GET/SET 的状态、缺 COMMON 的给申请按钮，用户点哪个申请哪个。调温、调座椅、`onCommand`/`onQuery` 的车控读写这些入口只用 `hasPermissions` 查（空调→`AC_COMMON`，座椅→`SETTING_COMMON`），缺了就不执行、日志记一条"没执行：缺 …"；完整自检是诊断，照常调用、没权限的项记失败。插件从 `ui.bind` 交来的容器的 context 剥出 `KnobActivity`，自己调 `requestPermissions`（请求码 1000，壳自己的蓝牙是 2000）；系统把结果回调给 `KnobActivity`，壳对不是自己发起的请求码原样转发 `onEvent("perm.result", {"requestCode": Int, "permissions": List<String>, "grantResults": List<Int>})`。插件只能申请壳 manifest 已声明的权限（byd 壳一次声明了全部 BYDAUTO 权限），所以新功能用到新设备只改插件（`CarControl` 加一个 `PERM_*`、在 `PERM_GROUPS` 加一行——真正在用就标 `required`，启动自检会拦——+ 功能入口调 `hasPermissions`），不用重签壳。申请只能由用户点申请按钮触发，不能放在页面刷新、`ui.bind` 这类自动路径上（车机上 `onResume` 高频触发，会死循环）。
 
 ⚠️ **壳进程常驻、Activity 反复创建销毁**，所以 `ui.unbind` 是必须的：插件（静态持有）若继续引用旧容器，会泄漏已销毁的 Activity，且下次 `ui.bind` 复用旧 View 时抛 `already has a parent`。Activity 销毁**只解绑 UI，绝不能 `PluginLoader.unload()`**（那会连插件状态和外设连接一起丢掉）。
 
@@ -147,6 +149,7 @@ cd firmware && pio run -e pcb -t upload        # V2 板用 -e pcb_v2，开发板
 
 - 开机自启改用广播接收器：`BootReceiver` 静态注册 `BOOT_COMPLETED` 与 `QUICKBOOT_POWERON`（部分定制系统的非标准开机 action）。`onReceive()` 本身只记一条日志，进程能被系统投递广播前必须先拉起——这是 Android 标准广播分发机制，不需要用户手动打开任何开关（这点跟以前依赖的无障碍服务不同，无障碍服务需要用户在系统设置里手动启用才生效）。
 - ⚠️ Android 系统会扣住"从未被用户主动启动过 / 已被强制停止"的 App 的隐式广播（含 `BOOT_COMPLETED`），直到用户手动打开一次——`KnobApp.kt` 注释里"车机重启后需要手动点开一次 App 才会运行"说的就是这条系统限制，不是 bug；手动打开过一次之后，`BootReceiver` 在后续开机时才能正常生效。
+- 插件加载（含开机自动加载）后先跑启动自检，通过才连旋钮；检查只读、不依赖界面，权限已授过的话开机没开界面也照常连上。没通过就不连，要用户打开界面按启动自检页补权限。
 - 进程不靠特殊绑定常驻：退出 Activity 不会销毁进程（标准 Android 行为），BLE 连接由插件自己的 `BleManager` 断线重连轮询维持，只要插件没被换（重新导入 `plugin.dex`）就能长期存活。
 
 ## 6. 调试与验证流程

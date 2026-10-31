@@ -41,7 +41,36 @@ class CarControl(private val logger: KnobHost) {
         const val FEATURE_REAR_LEFT_SEAT_VENTILATING = "RearLeftSeatVentilating"
         const val FEATURE_REAR_RIGHT_SEAT_HEATING = "RearRightSeatHeating"
         const val FEATURE_REAR_RIGHT_SEAT_VENTILATING = "RearRightSeatVentilating"
+
+        // 现有功能用到的 dangerous 级权限（*_COMMON）。壳 manifest 声明了全部
+        // BYDAUTO 权限，插件不自动申请：用户在启动自检页 / 自检页上点「申请」
+        // 按钮才申请（按 PERM_GROUPS 逐个功能列）；车控操作前只用
+        // MainPlugin.hasPermissions 查一下，缺了就不执行。新功能用到新设备就在
+        // 这里加一个、在 PERM_GROUPS 加一行，并在功能入口调 hasPermissions。
+        // 签名级 GET/SET 装车即授，不用申请。
+        const val PERM_AC = "android.permission.BYDAUTO_AC_COMMON"             // 空调温度/分控
+        const val PERM_SETTING = "android.permission.BYDAUTO_SETTING_COMMON"   // 座椅加热/通风
+        const val PERM_SPEED = "android.permission.BYDAUTO_SPEED_COMMON"       // 车速/油门/制动（目前只有自检在用）
+        const val PERM_BODYWORK = "android.permission.BYDAUTO_BODYWORK_COMMON" // 车架号/车型（目前只有自检在用）
+
+        /**
+         * 现有功能各自要的整套权限，启动自检和自检页按这个表逐行展示授权状态：
+         * common 是能运行时申请的那个，signature 是签名级的 GET/SET（申请不了，
+         * 只能看）。车速、车身只读，所以只列 GET。required = 车控功能真的在用，
+         * 启动自检要它全部授权、设备能初始化才放行（连旋钮、进车控）；车速、
+         * 车身目前只有自检在用，缺了只提示不拦。新功能加了 PERM_* 也在这里加一行。
+         */
+        val PERM_GROUPS = listOf(
+            PermGroup("空调（温度/分控）", PERM_AC, listOf(
+                "android.permission.BYDAUTO_AC_GET", "android.permission.BYDAUTO_AC_SET"), required = true),
+            PermGroup("座椅（加热/通风）", PERM_SETTING, listOf(
+                "android.permission.BYDAUTO_SETTING_GET", "android.permission.BYDAUTO_SETTING_SET"), required = true),
+            PermGroup("车速/油门/制动", PERM_SPEED, listOf("android.permission.BYDAUTO_SPEED_GET"), required = false),
+            PermGroup("车架号/车型", PERM_BODYWORK, listOf("android.permission.BYDAUTO_BODYWORK_GET"), required = false),
+        )
     }
+
+    class PermGroup(val label: String, val common: String, val signature: List<String>, val required: Boolean)
 
     private var settingDevice: BYDAutoSettingDevice? = null
     private var acDevice: BYDAutoAcDevice? = null
@@ -711,7 +740,7 @@ class CarControl(private val logger: KnobHost) {
             "android.permission.BYDAUTO_AC_SET",
             "android.permission.BYDAUTO_AC_COMMON",
             // 车速、车身设备实车初始化时被拒，probeBydPermissions 查到这两个
-            // 都是 dangerous 级，壳声明后点按钮运行时申请。
+            // 都是 dangerous 级，在自检页上点按钮运行时申请（PERM_SPEED/PERM_BODYWORK）。
             "android.permission.BYDAUTO_SPEED_COMMON",
             "android.permission.BYDAUTO_BODYWORK_COMMON"
             // Sensor 不需要单独申请权限，开发文档里写明了，不在这里列。

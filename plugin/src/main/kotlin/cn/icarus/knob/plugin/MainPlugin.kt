@@ -1,6 +1,9 @@
 package cn.icarus.knob.plugin
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.hardware.bydauto.ac.BYDAutoAcDevice
 import android.hardware.bydauto.setting.BYDAutoSettingDevice
@@ -11,9 +14,13 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import cn.icarus.knob.api.KnobHost
 import cn.icarus.knob.api.KnobPlugin
 import cn.icarus.knob.api.Ui
+import kotlin.math.roundToInt
 
 /**
  * 插件入口。实现 KnobPlugin，持有车控引擎 + 自检引擎。
@@ -51,6 +58,10 @@ class MainPlugin : KnobPlugin {
         // 上次见到的插件包文件修改时间，用来认出"刚导入了插件包"（见 resetOtaAttemptsIfNewPackage）
         private const val KEY_OTA_PACKAGE_STAMP = "ota_package_stamp"
         private const val MAX_OTA_ATTEMPTS = 2
+
+        // 插件借壳 Activity 申请权限用的请求码，跟壳自己的蓝牙请求码（2000）
+        // 错开，壳靠请求码分辨要不要转给插件。
+        private const val REQUEST_PERM = 1000
 
         // 座椅 5 档：-2/-1=通风2/1档，0=关闭，1/2=加热1/2档。负数=通风、
         // 正数=加热，这样触屏 ±/knob 屏幕的"居中对称"圆弧
@@ -200,6 +211,9 @@ class MainPlugin : KnobPlugin {
 
     private fun isAcStop(pageId: String) = pageId == "ac_link" || pageId == "ac_split"
 
+    /** 页面里零散的尺寸按 dp 算（Ui 自己的控件已经按 dp 了） */
+    private fun dp(v: Int): Int = ((appContext?.resources?.displayMetrics?.density ?: 1f) * v).roundToInt()
+
     // AC/Sensor 监听器的回调不在主线程上（AIDL 回调线程），这两个处理
     // 函数里要碰 View（refreshCurrentPage）和触发 knob 同步，必须先切回
     // 主线程，不然直接崩 CalledFromWrongThreadException。
@@ -227,9 +241,8 @@ class MainPlugin : KnobPlugin {
         resetOtaAttemptsIfNewPackage(context)
         restoreState()
         syncToKnob()
-        // BLE 连接现在整个归插件自己管（见 BleManager），壳不再插手认哪个
-        // 设备、什么时候连——插件加载完就该自己发起。
-        bleManager?.start()
+        // 先过启动自检，通过了才启动 BleManager 连旋钮（见 runStartupCheck）。
+        runStartupCheck()
     }
 
     /**
@@ -302,6 +315,15 @@ class MainPlugin : KnobPlugin {
     override fun onCommand(command: String, params: Map<String, Any>): Map<String, Any>? {
         val ctrl = carControl ?: return null
         val context = appContext ?: return null
+        // 车控命令没权限就不执行（不弹窗申请，见 hasPermissions）
+        val needed = when {
+            command.startsWith("ac.") -> listOf(CarControl.PERM_AC)
+            command.startsWith("seat.") -> listOf(CarControl.PERM_SETTING)
+            else -> emptyList()
+        }
+        if (needed.isNotEmpty() && !hasPermissions(needed, "onCommand($command)")) {
+            return resultMap(false, null, message = "缺权限，没执行")
+        }
         return try {
             when (command) {
                 "init.all" -> {
@@ -389,11 +411,13 @@ class MainPlugin : KnobPlugin {
                     resultMap(true, 0, value = selfTest?.lastResult() ?: "自检未初始化", message = "自检完成")
                 }
                 "seat.ventilating" -> {
+                    if (!hasPermissions(listOf(CarControl.PERM_SETTING), "读座椅通风")) return resultMap(false, null, message = "缺权限，没执行")
                     val v = ctrl.getDriverSeatVentilating(context)
                     if (v != null) resultMap(true, 0, value = v, message = "读取成功")
                     else resultMap(false, null, message = "读取失败")
                 }
                 "ac.temperature" -> {
+                    if (!hasPermissions(listOf(CarControl.PERM_AC), "读空调温度")) return resultMap(false, null, message = "缺权限，没执行")
                     val area = (params["area"] as? Number)?.toInt() ?: BYDAutoAcDevice.AC_TEMPERATURE_MAIN
                     val v = ctrl.getAcTemperature(context, area)
                     if (v != null) resultMap(true, 0, value = v, message = "读取成功")
@@ -416,6 +440,8 @@ class MainPlugin : KnobPlugin {
      *   "key"           params: {code: Int, action: Int}  壳转发的所有按键（含系统返回键）
      *   "ui.bind"       params: {container: ViewGroup}   壳交出页面容器，开始渲染
      *   "ui.unbind"     Activity 销毁，断开容器与 View 树的持有
+     *   "perm.result"   params: {requestCode: Int, permissions: List<String>, grantResults: List<Int>}
+     *                   插件借壳的 Activity 发起的权限申请结果，壳原样转回来（见 requestPermissionsByButton）
      */
     override fun onEvent(event: String, params: Map<String, Any>): Boolean {
         return try {
@@ -427,6 +453,14 @@ class MainPlugin : KnobPlugin {
                 }
                 "ui.unbind" -> {
                     unbindUi()
+                    true
+                }
+                "perm.result" -> {
+                    val requestCode = (params["requestCode"] as? Number)?.toInt() ?: return false
+                    if (requestCode != REQUEST_PERM) return false
+                    val perms = (params["permissions"] as? List<*>)?.filterIsInstance<String>().orEmpty()
+                    val results = (params["grantResults"] as? List<*>)?.filterIsInstance<Number>().orEmpty()
+                    handlePermissionResult(perms, results.map { it.toInt() })
                     true
                 }
                 "key" -> {
@@ -498,7 +532,17 @@ class MainPlugin : KnobPlugin {
      * 系统按键状态错乱。
      */
     private fun handleKey(code: Int, action: Int, value: Int?): Boolean {
+        // 启动自检没通过时车控按键一律不处理（旋钮这时也还没连），交给系统，
+        // 车机的确认键就能去点启动自检页上的按钮。
+        val carKey = code == KeyEvent.KEYCODE_TAB || code == KeyEvent.KEYCODE_ENTER || code == KEYCODE_CYCLE_SUB
+        if (carKey && startupState != StartupState.PASSED) return false
         when (code) {
+            // 唯一要处理返回键的情况：自检页开着时关掉它（叠在停靠点上的页面，
+            // 不是停靠点之间的切换）。其余时候照旧不处理，交给壳/系统。
+            KeyEvent.KEYCODE_BACK -> if (selfTestPageOpen) {
+                if (action == KeyEvent.ACTION_UP) closeSelfTestPage()
+                return true
+            }
             KeyEvent.KEYCODE_TAB -> {
                 if (action == KeyEvent.ACTION_UP) advanceStop()
                 return true
@@ -634,7 +678,7 @@ class MainPlugin : KnobPlugin {
         val ctx = appContext!!
         return Ui.vStack(ctx).apply {
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#FFFFFF"))
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
             addView(Ui.title(ctx, "⬆️ 正在升级旋钮固件"))
             addView(Ui.space(ctx, 0, 12))
             addView(Ui.text(ctx, "${otaPercent ?: 0}%", size = 40f, bold = true))
@@ -730,6 +774,7 @@ class MainPlugin : KnobPlugin {
             host?.log("🧪（模拟）座椅(seat=$seatId) -> ${seatLevelLabel(level)}")
             return
         }
+        if (!hasPermissions(listOf(CarControl.PERM_SETTING), "调座椅")) return
         val ctrl = carControl ?: return
         val context = appContext ?: return
         when {
@@ -852,7 +897,7 @@ class MainPlugin : KnobPlugin {
     private fun bindUi(container: ViewGroup) {
         pageContainer = container
         Log.i(tag, "ui.bind: 页面容器已就绪，当前页面=$currentPageId")
-        if (isAcStop(currentPageId)) refreshAcTemperatures()
+        if (startupState == StartupState.PASSED && isAcStop(currentPageId)) refreshAcTemperatures()
         refreshCurrentPage()
     }
 
@@ -860,6 +905,9 @@ class MainPlugin : KnobPlugin {
     private fun unbindUi() {
         pageContainer?.removeAllViews()
         pageContainer = null
+        selfTestStatusView = null
+        selfTestListView = null
+        selfTestScrollView = null
         Log.i(tag, "ui.unbind: 页面容器已解绑")
     }
 
@@ -893,7 +941,16 @@ class MainPlugin : KnobPlugin {
     private fun refreshCurrentPage() {
         val container = pageContainer ?: return
         val pageId = if (bleConnected || forceShowCarControl) currentPageId else "home"
-        val builder: () -> View = if (otaPercent != null) ::buildOtaPage else pages[pageId] ?: return
+        val builder: () -> View = when {
+            otaPercent != null -> ::buildOtaPage
+            selfTestPageOpen -> ::buildSelfTestPage
+            startupState != StartupState.PASSED -> ::buildStartupPage
+            else -> pages[pageId] ?: return
+        }
+        // 自检页逐项追加用的 View 引用只对当前这一页有效，换页先清掉。
+        selfTestStatusView = null
+        selfTestListView = null
+        selfTestScrollView = null
         container.removeAllViews()
         container.addView(builder(), ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -902,34 +959,427 @@ class MainPlugin : KnobPlugin {
         if (bleConnected) syncToKnob()
     }
 
-    // 自检正在跑（防重复点）。只在主线程读写这个标志（按钮点击 + 结束时
-    // post 回主线程清除），后台线程不碰，所以不用加 volatile。
-    private var selfTestRunning = false
+    // ==================== 启动自检（通过才连旋钮、进车控） ====================
+
+    private enum class StartupState { CHECKING, PASSED, FAILED }
+
+    // 插件加载后先跑一遍启动自检，PASSED 之前页面固定显示启动自检页、不启动
+    // BleManager、不响应车控按键。PASSED 是终态：本进程内通过一次就不再查。
+    // 只在主线程读写（后台检查跑完 post 回主线程再改）。
+    private var startupState = StartupState.CHECKING
+    private var startupChecking = false
+    private var startupItems: List<PluginSelfTest.Item> = emptyList()
+    // 已经初始化成功的设备（按 PERM_* 记）。没通过要重查时跳过它们：再调一次
+    // initAcDevice 会把同一个监听器又注册一遍，温度变化就会回调两次。
+    // 只在检查线程里读写，startupChecking 保证同一时间只有一个检查线程。
+    private val startupDeviceOk = mutableSetOf<String>()
 
     /**
-     * 跑一键全量自检。⚠️ 必须开后台线程：runAll 里有十几次 Thread.sleep(300)
-     * 和一串阻塞的设备调用，放主线程会卡住 UI 二三十秒直接 ANR。结果全程
-     * 打进日志窗口（车机无 adb，日志是唯一观测手段）。
+     * 启动自检：只读，不申请权限、不动车（完整自检会开关空调、调座椅，不能
+     * 每次开机都自动跑）。查 CarControl.PERM_GROUPS 里 required 的那几组：
+     * 权限全部授权、对应设备能初始化，才算通过。车机开机时可能没有界面，
+     * 检查本身不依赖界面，权限早就授过的话照样通过、照样连旋钮。
+     * 设备初始化是阻塞的 binder 调用，放后台线程，免得拖慢壳的启动。
      */
-    private fun runSelfTest() {
+    private fun runStartupCheck() {
+        if (startupState == StartupState.PASSED || startupChecking) return
+        if (SIMULATE_CAR_CONTROL) {
+            host?.log("🧪（模拟）不碰真车，跳过启动自检")
+            startupPassed()
+            return
+        }
         val ctx = appContext ?: return
-        val st = selfTest ?: run { host?.log("❌ 自检未初始化"); return }
-        if (selfTestRunning) { host?.log("⏳ 自检正在进行，请等它跑完"); return }
-        selfTestRunning = true
-        host?.log("🚀 开始自检（后台线程，约 20~30 秒，看日志）")
+        val ctrl = carControl ?: return
+        startupChecking = true
+        startupState = StartupState.CHECKING
+        refreshCurrentPage()
+        host?.log("🔍 启动自检：检查车控权限和设备")
         Thread {
-            try {
-                st.runAll(ctx)
+            val items = try {
+                startupCheckItems(ctx, ctrl)
             } catch (e: Throwable) {
-                host?.log("❌ 自检异常: ${e.javaClass.simpleName} - ${e.message}")
-            } finally {
-                mainHandler.post { selfTestRunning = false }
+                listOf(PluginSelfTest.Item("启动自检", false, "${e.javaClass.simpleName} - ${e.message}"))
+            }
+            mainHandler.post {
+                startupChecking = false
+                startupItems = items
+                items.forEach { host?.log("[启动自检] ${if (it.ok) "✅" else "❌"} ${it.name}：${it.detail}") }
+                if (items.all { it.ok }) startupPassed() else {
+                    startupState = StartupState.FAILED
+                    host?.log("❌ 启动自检没通过：先不连旋钮，按启动自检页上的提示补权限")
+                    refreshCurrentPage()
+                }
             }
         }.start()
     }
 
-    /** 车控自检按钮——纯车控诊断，跟旋钮连没连无关，连接页/车控页都放一个。 */
-    private fun selfTestButton(ctx: Context): View = Ui.btn(ctx, "🔧 自检") { runSelfTest() }
+    /** 每个 required 功能两项：权限齐不齐，齐了再看设备能不能初始化（不齐就不去碰设备）。 */
+    private fun startupCheckItems(ctx: Context, ctrl: CarControl): List<PluginSelfTest.Item> {
+        val devices: Map<String, Pair<String, () -> Boolean>> = mapOf(
+            CarControl.PERM_AC to ("初始化 AC 设备" to { ctrl.initAcDevice(ctx) }),
+            CarControl.PERM_SETTING to ("初始化 Setting 设备" to { ctrl.initSettingDevice(ctx) }),
+        )
+        val items = mutableListOf<PluginSelfTest.Item>()
+        CarControl.PERM_GROUPS.filter { it.required }.forEach { g ->
+            val missing = (listOf(g.common) + g.signature)
+                .filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            items += if (missing.isEmpty()) PluginSelfTest.Item("${g.label}权限", true, "已授权")
+            else PluginSelfTest.Item("${g.label}权限", false,
+                "缺 ${missing.joinToString("、") { it.removePrefix("android.permission.") }}")
+            val (name, initDevice) = devices[g.common] ?: return@forEach
+            items += when {
+                missing.isNotEmpty() -> PluginSelfTest.Item(name, false, "缺权限，没去初始化")
+                g.common in startupDeviceOk -> PluginSelfTest.Item(name, true, "ok（上次已初始化）")
+                initDevice() -> { startupDeviceOk += g.common; PluginSelfTest.Item(name, true, "ok") }
+                else -> PluginSelfTest.Item(name, false, "失败，详见日志")
+            }
+        }
+        return items
+    }
+
+    private fun startupPassed() {
+        startupState = StartupState.PASSED
+        host?.log("✅ 启动自检通过，开始连接旋钮")
+        // BLE 连接整个归插件自己管（见 BleManager），壳不插手认哪个设备、
+        // 什么时候连——启动自检一通过就自己发起。
+        bleManager?.start()
+        if (isAcStop(currentPageId)) refreshAcTemperatures()
+        refreshCurrentPage()
+    }
+
+    /** 启动自检没通过（或还在查）时固定显示这一页：哪项没过、缺哪些权限、申请按钮。 */
+    private fun buildStartupPage(): View {
+        val ctx = appContext!!
+        val body = Ui.vStack(ctx).apply {
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
+            addView(Ui.title(ctx, "🔍 启动自检"))
+            addView(Ui.space(ctx, 0, 8))
+            if (startupState == StartupState.CHECKING) {
+                addView(Ui.text(ctx, "⏳ 正在检查车控权限和设备…", size = 16f, bold = true))
+                return@apply
+            }
+            addView(Ui.text(ctx, "❌ 自检没通过", size = 16f, bold = true, color = Ui.COLOR_ERROR))
+            addView(Ui.hint(ctx, "通过后才会连接旋钮、进入车控。授权后会自动重新检查。"))
+            addView(Ui.space(ctx, 0, 8))
+            startupItems.sortedBy { it.ok }.forEach { addView(selfTestItemView(ctx, it)) }
+            addView(Ui.space(ctx, 0, 12))
+            addView(buildPermissionSection(ctx) { runStartupCheck() })
+            addView(Ui.hStack(ctx).apply {
+                addView(Ui.btn(ctx, "🔁 重新检查") { runStartupCheck() })
+                addView(Ui.space(ctx, 12, 0))
+                addView(selfTestButton(ctx))
+            })
+        }
+        return ScrollView(ctx).apply {
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
+            addView(body)
+        }
+    }
+
+    // ==================== 自检页 ====================
+
+    // 自检页叠在停靠点页面上面显示（跟升级页一样不改 currentPageId，旋钮照常
+    // 能用），点「返回」或系统返回键关掉。以下状态都只在主线程读写：后台
+    // 线程逐项结果、跑完都 post 回主线程再改，所以不用加 volatile。
+    private var selfTestPageOpen = false
+    private var selfTestRunning = false
+    private val selfTestItems = mutableListOf<PluginSelfTest.Item>()
+    private var selfTestDone = false
+    // 开跑那一刻没授权的权限，跑完后对比现在的状态，提示"有新授权，重跑看效果"。
+    private var selfTestMissingAtStart: Set<String> = emptySet()
+
+    // 正在显示的自检页里那几个要逐项更新的 View。跑的过程中每出一项只往
+    // 列表末尾追加一行，不整页重绘——整页重绘会把滚动位置打回顶部，而且
+    // refreshCurrentPage 每次都会给旋钮同步一次，几十项就是几十次 BLE 写。
+    private var selfTestStatusView: TextView? = null
+    private var selfTestListView: LinearLayout? = null
+    private var selfTestScrollView: ScrollView? = null
+
+    /** 车控自检入口按钮——纯车控诊断，跟旋钮连没连无关，连接页/车控页都放一个。只打开页面，不直接开跑。 */
+    private fun selfTestButton(ctx: Context): View = Ui.btn(ctx, "🔧 自检") { openSelfTestPage() }
+
+    private fun openSelfTestPage() {
+        selfTestPageOpen = true
+        refreshCurrentPage()
+    }
+
+    private fun closeSelfTestPage() {
+        selfTestPageOpen = false
+        refreshCurrentPage()
+    }
+
+    /**
+     * 跑一键全量自检。不先申请权限：没授权的项如实记失败，跑完页面上再列出
+     * 缺的权限和申请按钮，由用户决定申请哪个。⚠️ 必须开后台线程：runAll 里有
+     * 十几次 Thread.sleep(300) 和一串阻塞的设备调用，放主线程会卡住 UI 二三
+     * 十秒直接 ANR。结果同时打进日志窗口（车机无 adb，日志是唯一观测手段）。
+     */
+    private fun startSelfTest() {
+        val ctx = appContext ?: return
+        val st = selfTest ?: run { host?.log("❌ 自检未初始化"); return }
+        if (selfTestRunning) { host?.log("⏳ 自检正在进行，请等它跑完"); return }
+        selfTestRunning = true
+        selfTestDone = false
+        selfTestItems.clear()
+        selfTestMissingAtStart = missingPermissions(ctx)
+        refreshCurrentPage()
+        host?.log("🚀 开始自检（后台线程，约 20~30 秒）")
+        Thread {
+            try {
+                st.runAll(ctx) { item -> mainHandler.post { appendSelfTestItem(item) } }
+            } catch (e: Throwable) {
+                host?.log("❌ 自检异常: ${e.javaClass.simpleName} - ${e.message}")
+            } finally {
+                mainHandler.post {
+                    selfTestRunning = false
+                    selfTestDone = true
+                    refreshCurrentPage()
+                }
+            }
+        }.start()
+    }
+
+    private fun appendSelfTestItem(item: PluginSelfTest.Item) {
+        selfTestItems += item
+        val ctx = appContext ?: return
+        selfTestStatusView?.text = "⏳ 正在自检… 已完成 ${selfTestItems.size} 项"
+        val list = selfTestListView ?: return
+        list.addView(selfTestItemView(ctx, item))
+        selfTestScrollView?.let { sv -> sv.post { sv.fullScroll(View.FOCUS_DOWN) } }
+    }
+
+    /** 现有功能要的全部权限里没授权的（COMMON 和签名级都算），模拟模式算全有。 */
+    private fun missingPermissions(ctx: Context): Set<String> {
+        if (SIMULATE_CAR_CONTROL) return emptySet()
+        return CarControl.PERM_GROUPS.flatMap { listOf(it.common) + it.signature }
+            .filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            .toSet()
+    }
+
+    /**
+     * 自检页：顶部状态和按钮，跑完后紧跟着权限区（缺哪个、能不能申请），
+     * 最后是逐项结果（跑完后失败的排前面）。没跑过时只有说明和开始按钮。
+     */
+    private fun buildSelfTestPage(): View {
+        val ctx = appContext!!
+        val list = Ui.vStack(ctx).apply { setPadding(0, 0, 0, 0) }
+        val status = Ui.text(ctx, "", size = 16f, bold = true)
+        val body = Ui.vStack(ctx).apply {
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
+            addView(Ui.hStack(ctx).apply {
+                addView(Ui.btn(ctx, "← 返回") { closeSelfTestPage() })
+                addView(Ui.space(ctx, 12, 0))
+                addView(Ui.title(ctx, "🔧 车控自检"))
+            })
+            addView(Ui.space(ctx, 0, 8))
+            addView(status)
+            val passed = selfTestItems.count { it.ok }
+            val failed = selfTestItems.size - passed
+            status.text = when {
+                selfTestRunning -> "⏳ 正在自检… 已完成 ${selfTestItems.size} 项"
+                selfTestDone -> "🏁 自检完成：通过 $passed 项，失败 $failed 项"
+                else -> "还没有自检结果"
+            }
+            if (!selfTestRunning) {
+                if (!selfTestDone) {
+                    addView(Ui.hint(ctx, "会逐项实际调用车控：开关空调、改温度/风量/风向/循环、调座椅通风，" +
+                        "再读车速、车架号等，约 20~30 秒。结果也会打进左边日志。"))
+                }
+                addView(Ui.space(ctx, 0, 8))
+                addView(Ui.primaryBtn(ctx, if (selfTestDone) "🔁 重新自检" else "▶️ 开始自检") { startSelfTest() })
+            }
+            if (selfTestDone) {
+                if ((selfTestMissingAtStart - missingPermissions(ctx)).isNotEmpty()) {
+                    addView(Ui.text(ctx, "👉 自检之后有新授权，点「重新自检」看效果", size = 13f, color = Ui.COLOR_ACCENT))
+                }
+                addView(Ui.space(ctx, 0, 12))
+                addView(buildPermissionSection(ctx) { refreshCurrentPage() })
+            }
+            if (selfTestRunning || selfTestDone) {
+                addView(Ui.space(ctx, 0, 12))
+                addView(Ui.label(ctx, "逐项结果"))
+                addView(Ui.divider(ctx))
+                val shown = if (selfTestDone) selfTestItems.sortedBy { it.ok } else selfTestItems
+                shown.forEach { list.addView(selfTestItemView(ctx, it)) }
+                addView(list)
+            }
+        }
+        val scroll = ScrollView(ctx).apply {
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
+            addView(body)
+        }
+        selfTestStatusView = status
+        selfTestListView = list
+        selfTestScrollView = scroll
+        return scroll
+    }
+
+    private fun selfTestItemView(ctx: Context, item: PluginSelfTest.Item): View =
+        Ui.text(ctx, "${if (item.ok) "✅" else "❌"} ${item.name}：${item.detail}",
+            size = 13f, color = if (item.ok) Ui.COLOR_OK else Ui.COLOR_ERROR).apply {
+            setPadding(0, dp(4), 0, dp(4))
+        }
+
+    /**
+     * 权限区：现有功能一行一个（CarControl.PERM_GROUPS），列出 COMMON 和签名级
+     * GET/SET 的授权状态。COMMON 没授权就给一个申请按钮——用户点了才申请，
+     * 一次只申请这一行的那一个；签名级的申请不了，只说明原因。弹窗结果回来
+     * （授没授都算）调 onChanged：启动自检页借它重新检查，自检页只重绘。
+     */
+    private fun buildPermissionSection(ctx: Context, onChanged: () -> Unit): View = Ui.vStack(ctx).apply {
+        setPadding(0, 0, 0, 0)
+        addView(Ui.label(ctx, "车控权限"))
+        addView(Ui.divider(ctx))
+        if (SIMULATE_CAR_CONTROL) {
+            addView(Ui.hint(ctx, "模拟版插件不碰真车，不需要车控权限"))
+            return@apply
+        }
+        val declared = declaredPermissions(ctx)
+        fun granted(p: String) = ctx.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+        fun short(p: String) = p.removePrefix("android.permission.BYDAUTO_")
+        val missingNow = missingPermissions(ctx)
+        if (missingNow.isEmpty()) {
+            addView(Ui.hint(ctx, "✅ 现有功能要的权限都已授权"))
+        }
+        CarControl.PERM_GROUPS.forEach { g ->
+            val perms = listOf(g.common) + g.signature
+            val ok = perms.all { granted(it) }
+            addView(Ui.card(ctx).apply {
+                addView(Ui.text(ctx, "${if (ok) "✅" else "⚠️"} ${g.label}", bold = true))
+                addView(Ui.hint(ctx, perms.joinToString("  ") { "${short(it)} ${if (granted(it)) "✅" else "❌"}" }))
+                if (!g.required) addView(Ui.hint(ctx, "车控功能暂未用到，缺了不影响启动"))
+                when {
+                    granted(g.common) -> {}
+                    g.common !in declared ->
+                        addView(Ui.hint(ctx, "${short(g.common)} 壳没声明，申请不了，要换新版壳"))
+                    g.common in permanentlyDenied ->
+                        addView(Ui.hint(ctx, "${short(g.common)} 已被拒绝且不再弹窗：请到系统设置 → 应用 → Knob → 权限里手动打开"))
+                    else -> addView(Ui.primaryBtn(ctx, "🔑 申请 ${short(g.common)}") {
+                        if (requestPermissionsByButton(listOf(g.common), g.label) { onChanged() }) onChanged()
+                    })
+                }
+                val sigMissing = g.signature.filterNot { granted(it) }
+                if (sigMissing.isNotEmpty()) {
+                    val undeclared = sigMissing.filterNot { it in declared }
+                    addView(Ui.hint(ctx, if (undeclared.isNotEmpty())
+                        "${undeclared.joinToString("、") { short(it) }} 壳没声明，要换新版壳"
+                    else
+                        "${sigMissing.joinToString("、") { short(it) }} 是签名级，不能申请：壳要用车机厂商签名签过才有"))
+                }
+            })
+            addView(Ui.space(ctx, 0, 8))
+        }
+    }
+
+    // ==================== 运行时权限（只在用户点申请按钮时申请） ====================
+
+    // 正在等系统权限弹窗结果的那个按钮的回调（刷新页面 / 重新检查）。系统同一时间
+    // 只处理一组申请，弹窗没关之前再申请会被直接取消，所以只留一份，弹窗期间又点
+    // 了别的申请按钮就用最新的覆盖。只在主线程读写。
+    private var pendingPermissionRetry: ((Boolean) -> Unit)? = null
+
+    // 被拒且系统不再弹窗的权限（用户勾了不再询问），自检页据此不再给申请按钮。
+    // 只有申请过一次才知道，所以进程重启后清空，再点申请会重新探出来。
+    private val permanentlyDenied = mutableSetOf<String>()
+
+    /**
+     * 车控调用前的检查：权限都在返回 true；缺了只记一笔、返回 false，调用方这次
+     * 什么都不做——不弹窗申请。权限一律由用户在启动自检页 / 自检页上点「申请」
+     * 按钮申请（requestPermissionsByButton），调温、调座椅这类操作不会顺带弹窗。
+     * 模拟模式不碰真车，不需要权限。
+     */
+    private fun hasPermissions(perms: List<String>, what: String): Boolean {
+        if (SIMULATE_CAR_CONTROL) return true
+        val ctx = appContext ?: return false
+        val missing = perms.filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) return true
+        host?.log("⚠️ $what 没执行：缺 ${missing.joinToString("、") { it.removePrefix("android.permission.") }}，到自检页点「申请」按钮授权")
+        return false
+    }
+
+    /**
+     * 申请权限，只给启动自检页 / 自检页上的「申请」按钮用：权限都在返回 true；缺了
+     * 就借壳 Activity 弹窗申请、返回 false，结果回来调 onResult(全部授权了没有)。
+     * 壳 manifest 没声明的申请了也是直接被拒，这种情况只打日志。模拟模式不需要权限。
+     *
+     * 插件不能声明 Activity，但 ui.bind 交来的容器就挂在 KnobActivity 上，
+     * 从它的 context 一层层剥 ContextWrapper 就能拿到；结果由系统回调给
+     * KnobActivity，壳再用 onEvent("perm.result") 转回来。
+     * ⚠️ 只能从用户点申请按钮调过来：车控操作不申请（见 hasPermissions），页面刷新、
+     * ui.bind 这类自动路径更不能申请——这台车机上 onResume 会被高频反复调用，自动
+     * 申请会死循环（KnobActivity 里有同样的说明）。
+     */
+    private fun requestPermissionsByButton(perms: List<String>, what: String, onResult: (Boolean) -> Unit): Boolean {
+        if (SIMULATE_CAR_CONTROL) return true
+        val ctx = appContext ?: return false
+        val missing = perms.filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) return true
+        val names = missing.joinToString("、") { it.removePrefix("android.permission.") }
+        val undeclared = missing - declaredPermissions(ctx)
+        if (undeclared.isNotEmpty()) {
+            host?.log("❌ $what 需要的 ${undeclared.joinToString("、") { it.removePrefix("android.permission.") }} 壳没声明，申请不了")
+            return false
+        }
+        if (pendingPermissionRetry != null) {
+            host?.log("⏳ 权限弹窗还没处理完，先处理完再申请 $what")
+            pendingPermissionRetry = onResult
+            return false
+        }
+        val activity = hostActivity() ?: run {
+            host?.log("❌ 申请 $what 的 $names 权限要在 Knob 界面上点")
+            return false
+        }
+        host?.log("👉 $what 需要 $names 权限，申请中")
+        pendingPermissionRetry = onResult
+        activity.requestPermissions(missing.toTypedArray(), REQUEST_PERM)
+        return false
+    }
+
+    /** 壳 manifest 声明的全部权限（壳不重装就不会变，但查一次很便宜，不缓存）。 */
+    private fun declaredPermissions(ctx: Context): Set<String> = try {
+        ctx.packageManager.getPackageInfo(ctx.packageName, PackageManager.GET_PERMISSIONS)
+            .requestedPermissions?.toSet().orEmpty()
+    } catch (e: Throwable) {
+        Log.w(tag, "读壳声明的权限失败: ${e.message}")
+        emptySet()
+    }
+
+    private fun hostActivity(): Activity? {
+        var c: Context? = pageContainer?.context
+        while (c is ContextWrapper) {
+            if (c is Activity) return c
+            c = c.baseContext
+        }
+        return null
+    }
+
+    /**
+     * 申请结果。结果为空说明弹窗被系统取消，按没授权算。被拒且系统不再给
+     * "说明理由"的机会，说明用户勾了不再询问（或被策略禁止），再操作也不会
+     * 弹窗，只能去系统设置里手动授权。
+     */
+    private fun handlePermissionResult(perms: List<String>, results: List<Int>) {
+        val activity = hostActivity()
+        perms.forEachIndexed { i, perm ->
+            val name = perm.removePrefix("android.permission.")
+            when {
+                results.getOrNull(i) == PackageManager.PERMISSION_GRANTED -> {
+                    permanentlyDenied -= perm
+                    host?.log("✅ $name 已授权")
+                }
+                activity != null && !activity.shouldShowRequestPermissionRationale(perm) -> {
+                    permanentlyDenied += perm
+                    host?.log("❌ $name 未授权：系统不再弹窗，请到系统设置里手动授权")
+                }
+                else -> host?.log("❌ $name 未授权")
+            }
+        }
+        val allGranted = perms.isNotEmpty() && results.size == perms.size &&
+            results.all { it == PackageManager.PERMISSION_GRANTED }
+        val retry = pendingPermissionRetry
+        pendingPermissionRetry = null
+        retry?.invoke(allGranted)
+    }
 
     /**
      * "首页" = 没连上 knob 时强制显示的连接页（见 refreshCurrentPage 的
@@ -945,12 +1395,12 @@ class MainPlugin : KnobPlugin {
         val name = candidateName
         return Ui.vStack(ctx).apply {
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#FFFFFF"))
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
             addView(Ui.title(ctx, "🔌 未连接旋钮"))
             if (name != null) {
                 addView(Ui.hint(ctx, "发现设备：$name"))
                 addView(Ui.space(ctx, 0, 12))
-                addView(Ui.btn(ctx, "🔗 确认配对") {
+                addView(Ui.primaryBtn(ctx, "🔗 确认配对") {
                     host?.log("👉 用户确认配对 $name")
                     // 乐观清空：配对是否成功由后续连接状态变化 / 重新扫描
                     // 决定，这里先退回"扫描中"文案，避免配对失败后按钮还
@@ -1001,6 +1451,7 @@ class MainPlugin : KnobPlugin {
             host?.log("🧪（模拟）跳过读取车况，沿用当前本地值")
             return
         }
+        if (!hasPermissions(listOf(CarControl.PERM_AC), "读空调温度")) return
         val ctrl = carControl ?: return
         val context = appContext ?: return
         ctrl.getAcTemperature(context, BYDAutoAcDevice.AC_TEMPERATURE_MAIN)?.let { vehicleState.acMainTemp = it }
@@ -1024,7 +1475,7 @@ class MainPlugin : KnobPlugin {
         }
         return Ui.vStack(ctx).apply {
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#E3F2FD"))
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
             addView(Ui.title(ctx, title))
             addView(Ui.space(ctx, 0, 12))
             when (currentPageId) {
@@ -1091,11 +1542,11 @@ class MainPlugin : KnobPlugin {
                 addView(Ui.btn(ctx, "－") {
                     onChange((value - 1).coerceIn(BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN, BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX))
                 })
-                addView(Ui.text(ctx, "${value}°C", size = 18f, bold = true))
+                addView(Ui.text(ctx, "${value}°C", size = 32f, bold = true).apply { setPadding(dp(16), 0, dp(16), 0) })
                 addView(Ui.btn(ctx, "＋") {
                     onChange((value + 1).coerceIn(BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MIN, BYDAutoAcDevice.AC_TEMP_IN_CELSIUS_MAX))
                 })
-                addView(Ui.btn(ctx, "OK") { onOk() })
+                addView(Ui.primaryBtn(ctx, "OK") { onOk() })
             })
         }
     }
@@ -1119,6 +1570,7 @@ class MainPlugin : KnobPlugin {
             host?.log("🧪（模拟）setAcTemperatureControlMode separate=$separate; setAcTemperature area=$area value=$value")
             return
         }
+        if (!hasPermissions(listOf(CarControl.PERM_AC), "调空调温度")) return
         val ctrl = carControl ?: return
         val context = appContext ?: return
         pendingAcLinkMode?.let { mainHandler.removeCallbacks(it) }
@@ -1143,7 +1595,7 @@ class MainPlugin : KnobPlugin {
         val ctx = appContext!!
         return Ui.vStack(ctx).apply {
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#E8F5E9"))
+            setBackgroundColor(Color.parseColor(Ui.COLOR_BG))
             addView(Ui.title(ctx, "🪑 座椅"))
             addView(Ui.space(ctx, 0, 12))
             addView(buildSeatRow())
@@ -1179,13 +1631,13 @@ class MainPlugin : KnobPlugin {
                     persistState()
                     refreshCurrentPage()
                 })
-                addView(Ui.text(ctx, seatLevelLabel(level), size = 18f, bold = true))
+                addView(Ui.text(ctx, seatLevelLabel(level), size = 24f, bold = true).apply { setPadding(dp(16), 0, dp(16), 0) })
                 addView(Ui.btn(ctx, "＋") {
                     setSeatLevelFor(slot.id, (level + 1).coerceIn(SEAT_LEVEL_MIN, SEAT_LEVEL_MAX))
                     persistState()
                     refreshCurrentPage()
                 })
-                addView(Ui.btn(ctx, "OK") { commitSeatLevel(slot.id, seatLevelFor(slot.id)) })
+                addView(Ui.primaryBtn(ctx, "OK") { commitSeatLevel(slot.id, seatLevelFor(slot.id)) })
             })
         }
     }

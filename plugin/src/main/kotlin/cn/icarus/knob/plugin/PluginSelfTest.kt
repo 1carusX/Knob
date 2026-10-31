@@ -8,13 +8,19 @@ import cn.icarus.knob.api.KnobHost
 /**
  * 一键全量自检（从壳的 SelfTest 迁移到插件）。
  * 接收 CarControl 实例执行车控，日志通过 logger 回调。
+ * 每跑完一项回调 onItem（在调用 runAll 的线程上，自检页靠它逐项刷新），
+ * 全部跑完返回逐项结果。
  */
 class PluginSelfTest(
     private val control: CarControl,
     private val logger: KnobHost
 ) {
 
-    fun runAll(context: Context) {
+    /** 一项自检结果：detail 成功时是返回值，失败时是异常类型和消息。 */
+    data class Item(val name: String, val ok: Boolean, val detail: String)
+
+    fun runAll(context: Context, onItem: (Item) -> Unit = {}): List<Item> {
+        val items = mutableListOf<Item>()
         val sb = StringBuilder()
         fun out(msg: String) {
             sb.append(msg).append("\n")
@@ -26,14 +32,18 @@ class PluginSelfTest(
         var fail = 0
 
         fun run(name: String, action: () -> String) {
-            try {
+            val item = try {
                 val result = action()
                 out("[自检] ✅ $name : 返回码=$result")
                 pass++
+                Item(name, true, result)
             } catch (e: Throwable) {
                 out("[自检] ❌ $name : ${e.javaClass.simpleName} - ${e.message}")
                 fail++
+                Item(name, false, "${e.javaClass.simpleName} - ${e.message}")
             }
+            items += item
+            onItem(item)
             try { Thread.sleep(300) } catch (ignored: InterruptedException) {}
         }
 
@@ -106,6 +116,7 @@ class PluginSelfTest(
 
         out("🏁 自检完成：通过 $pass 项，失败 $fail 项")
         _lastResult = sb.toString()
+        return items
     }
 
     private var _lastResult: String = ""

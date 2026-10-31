@@ -33,7 +33,7 @@
 | 文件 | 职责 |
 |------|------|
 | `app/src/byd/java/cn/icarus/knob/PlatformConfig.kt`、`app/src/generic/java/cn/icarus/knob/PlatformConfig.kt` | 同包同名对象，仅 `byd` 一份非空：`runtimePerms`（需要按钮申请的 dangerous 权限）+ `statusPermissions`（状态日志要打印的全部权限）。跟 `plugin/` 的 `BuildFlags.kt` 是同一个"同路径两份、值不同"套路 |
-| `app/src/byd/AndroidManifest.xml` | manifest overlay，编译期合入基座，声明 AC/SETTING 的 GET/SET 加上实车列出的全部 20 个 `BYDAUTO_*_COMMON`（均为 dangerous 级）；`generic` 没有这份文件、也就没有这些权限 |
+| `app/src/byd/AndroidManifest.xml` | manifest overlay，编译期合入基座，声明 114 个 `BYDAUTO_*` 权限：实车列出的全部 20 个 `*_COMMON`（均为 dangerous 级），加上按 `BYDAUTO_<设备>_GET/SET` 命名补全的各设备 GET/SET（signature 级，车机上查不到定义）。`PlatformConfig.statusPermissions` 与它一一对应；`generic` 没有这份文件、也就没有这些权限 |
 | `app/src/main/java/cn/icarus/knob/RuntimePerm.kt` | `PlatformConfig.runtimePerms` 元素的通用数据类（`perm`/`icon`/`label`），本身不含平台字符串 |
 | `app/src/main/java/cn/icarus/knob/api/KnobPlugin.kt` | 壳↔DEX 契约接口（四功能域，见下） |
 | `app/src/main/java/cn/icarus/knob/api/KnobHost.kt` | 插件反向调壳的能力：只剩 `log`——BLE 连接整体归插件自己的 `BleManager` 管，不再经壳转发 |

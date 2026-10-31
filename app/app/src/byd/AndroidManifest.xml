@@ -5,35 +5,128 @@
      座椅通风在 Setting 设备，空调在 AC 设备。
      *_GET/*_SET 为 signature 级（车机厂商签名装车即授）；
      *_COMMON 为 dangerous 级（运行时申请，见 KnobActivity + PlatformConfig）。
-     其中 20 个 *_COMMON 是插件 probeBydPermissions 在实车（DiLink 5.0，Android 12）
-     上列出的全部 BYDAUTO 权限，均为 dangerous、定义包=android。一次全部声明，
-     以后插件用到哪个设备只需运行时申请，不用为加一行声明重签壳。
+     两层都要：只有 COMMON 没有 GET 时设备初始化报 [getInt] permission deny!
+     （车速、车身实车就卡在这里，见 docs/验证结论.md）。
+     列表 = 插件 probeBydPermissions 在实车（DiLink 5.0，Android 12）上列出的
+     20 个 *_COMMON，加上按 BYDAUTO_<设备>_GET/SET 命名补全的各设备 GET/SET。
+     GET/SET 在车机上查不到定义，名字是按命名规律补的；声明不存在的权限无害，
+     一次全部声明，以后插件用到哪个设备不用为加一行声明重签壳。
      按权限名字母顺序排列，新增时插到对应位置。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.BYDAUTO_AC_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_AC_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_AC_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_ADAS_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_ADAS_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_AUDIO_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_AUDIO_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_AUDIO_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_AUX_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_AUX_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_BIGDATA_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_CHARGING_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_CHARGING_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_CHARGING_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_COLLISION_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_COLLISION_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_CPUTEMPRATURE_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_DOOR_LOCK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_DOOR_LOCK_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_DOOR_LOCK_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_DTC_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_DTC_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_ENERGY_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENERGY_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENERGY_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_ENGINE_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENGINE_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENGINE_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_FUNCNOTICE_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_FUNCNOTICE_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_GB_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_GB_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_LIGHT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_LIGHT_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_LIGHT_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_LOCATION_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_LOCATION_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_MOTOR_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_MOTOR_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_MQTT_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_MQTT_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_MULTIMEDIA_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_MULTIMEDIA_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_MULTIMEDIA_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_OTA_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_OTA_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_PANORAMA_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_PANORAMA_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_PANORAMA_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_PHONE_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_PHONE_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_PM2P5_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_PM2P5_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_PM2P5_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_POWER_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_POWER_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_POWER_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_QCFS_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_QCFS_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_RADAR_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_RADAR_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_RADAR_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_REAR_VIEW_MIRROR_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_REAR_VIEW_MIRROR_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_REMINDER_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_REMINDER_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_RESCUE_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_RESCUE_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_RSE_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_RSE_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_SAFETY_BELT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SAFETY_BELT_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SAFETY_BELT_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SECURITY_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SECURITY_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SENSOR_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SENSOR_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SENSOR_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_SETTING_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_SETTING_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_SETTING_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SIGNAL_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SPECIAL_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SPECIAL_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SPEED_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_TEST_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_TEST_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_TIME_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_TIME_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_TIME_SET" />
     <uses-permission android:name="android.permission.BYDAUTO_TYRE_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_TYRE_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_TYRE_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_VEHICLE_DATA_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_VEHICLE_DATA_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_VERSION_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_VERSION_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_WIPER_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_WIPER_SET" />
+    <uses-permission android:name="android.permission.BYDAUTO_YUN_GET" />
 
 </manifest>

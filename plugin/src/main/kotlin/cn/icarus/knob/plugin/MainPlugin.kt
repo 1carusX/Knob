@@ -9,6 +9,7 @@ import android.hardware.bydauto.ac.BYDAutoAcDevice
 import android.hardware.bydauto.setting.BYDAutoSettingDevice
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
@@ -20,7 +21,10 @@ import android.widget.TextView
 import cn.icarus.knob.api.KnobHost
 import cn.icarus.knob.api.KnobPlugin
 import cn.icarus.knob.api.Ui
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
  * 插件入口。实现 KnobPlugin，持有车控引擎 + 自检引擎。
@@ -62,6 +66,9 @@ class MainPlugin : KnobPlugin {
         // 插件借壳 Activity 申请权限用的请求码，跟壳自己的蓝牙请求码（2000）
         // 错开，壳靠请求码分辨要不要转给插件。
         private const val REQUEST_PERM = 1000
+
+        // 驾驶数据推给旋钮的最短间隔（最多 5 次/秒），见 scheduleDrivePush
+        private const val DRIVE_PUSH_INTERVAL_MS = 200L
 
         // 座椅 5 档：-2/-1=通风2/1档，0=关闭，1/2=加热1/2档。负数=通风、
         // 正数=加热，这样触屏 ±/knob 屏幕的"居中对称"圆弧
@@ -226,6 +233,9 @@ class MainPlugin : KnobPlugin {
         carControl = CarControl(host).also {
             it.onTemperatureChangedExternal = ::handleExternalTemperatureChange
             it.onLightIntensityChangedExternal = ::handleExternalLightIntensityChange
+            it.onSpeedChangedExternal = { v -> mainHandler.post { handleDriveSpeed(v) } }
+            it.onAccelerateDeepnessChangedExternal = { v -> mainHandler.post { handleDrivePedal(throttle = true, v) } }
+            it.onBrakeDeepnessChangedExternal = { v -> mainHandler.post { handleDrivePedal(throttle = false, v) } }
         }
         selfTest = PluginSelfTest(carControl!!, host)
         bleManager = BleManager(context, host).also {
@@ -283,7 +293,7 @@ class MainPlugin : KnobPlugin {
     private fun handleExternalLightIntensityChange(level: Int) {
         val percent = brightnessForLightLevel(level)
         mainHandler.post {
-            bleManager?.write(mapOf("brightness" to percent))
+            bleManager?.write(mapOf("brightness" to percent), slot = "brightness")
         }
     }
 
@@ -583,6 +593,8 @@ class MainPlugin : KnobPlugin {
         // 清掉避免下次断线时凭空继续生效，逼用户重新决定要不要再跳过。
         if (connected) forceShowCarControl = false
         refreshCurrentPage()
+        // 旋钮断线时清掉了驾驶数据，连上补一份（数值没变也推）
+        if (connected) pushDrive(force = true)
     }
 
     /**
@@ -959,6 +971,121 @@ class MainPlugin : KnobPlugin {
         if (bleConnected) syncToKnob()
     }
 
+    // ==================== 驾驶数据（旋钮的驾驶页） ====================
+
+    // 旋钮停靠点画面闲置一会儿会自己切到驾驶页（车速/油门/刹车），第一次操作
+    // 再切回来——什么时候显示全由固件决定（firmware/src/main.cpp 的
+    // s_drive_showing），插件的 currentPageId 不变。插件只管把最新的驾驶数据
+    // 单独推过去（slot "drive"，不跟停靠点同步抢排队位）。读不到车速（实车缺
+    // SPEED_GET、设备初始化失败）就一条都不推，旋钮也就不会切到驾驶页。
+    // 以下只在主线程读写。
+    private var driveStarted = false
+    private var driveHaveData = false
+    private var driveSpeed: Int? = null
+    private var driveThrottle = 0
+    private var driveBrake = 0
+    private var lastDrivePushed: Map<String, Any>? = null
+    private var lastDrivePushMs = 0L
+    private var drivePushScheduled = false
+    private var driveMissingPermLogged = false
+
+    /**
+     * 启动自检通过后、以及权限申请有结果后调：车速设备的权限齐了就初始化、读一次
+     * 起点，之后靠监听回调更新。车速/车身不在启动自检的必需项里，缺权限只记一笔。
+     */
+    private fun maybeStartDriveData() {
+        if (driveStarted || startupState != StartupState.PASSED) return
+        if (SIMULATE_CAR_CONTROL) {
+            driveStarted = true
+            host?.log("🧪（模拟）旋钮驾驶页用假的车速/油门/刹车数据")
+            mainHandler.post(simulateDriveTick)
+            return
+        }
+        val ctx = appContext ?: return
+        val ctrl = carControl ?: return
+        val group = CarControl.PERM_GROUPS.first { it.common == CarControl.PERM_SPEED }
+        val missing = (listOf(group.common) + group.signature)
+            .filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            if (!driveMissingPermLogged) {
+                driveMissingPermLogged = true
+                host?.log("ℹ️ 旋钮驾驶页没有数据：缺 ${missing.joinToString("、") { it.removePrefix("android.permission.") }}")
+            }
+            return
+        }
+        driveStarted = true
+        Thread {
+            val snap = try { ctrl.startDriveData(ctx) } catch (e: Throwable) { null }
+            mainHandler.post {
+                if (snap == null) {
+                    driveStarted = false // 下次权限有变化再试
+                    host?.log("❌ 车速设备初始化失败，旋钮驾驶页没有数据（详见上方）")
+                    return@post
+                }
+                host?.log("🚗 驾驶数据已接上：车速 ${snap.speedKmh} km/h、油门 ${snap.accelerate}%、刹车 ${snap.brake}%")
+                snap.speedKmh?.let { handleDriveSpeed(it) }
+                snap.accelerate?.let { handleDrivePedal(throttle = true, it) }
+                snap.brake?.let { handleDrivePedal(throttle = false, it) }
+            }
+        }.start()
+    }
+
+    private fun handleDriveSpeed(kmh: Double) {
+        // SDK 范围 0~282；超出范围（读失败时的哨兵值之类）按读不到算
+        driveSpeed = if (kmh.isNaN() || kmh < 0 || kmh > 400) null else kmh.roundToInt()
+        driveHaveData = true
+        scheduleDrivePush()
+    }
+
+    private fun handleDrivePedal(throttle: Boolean, percent: Int) {
+        if (percent !in 0..100) return // 失败返回码（SPEED_COMMAND_* 都是很大的负数），不当真
+        if (throttle) driveThrottle = percent else driveBrake = percent
+        driveHaveData = true
+        scheduleDrivePush()
+    }
+
+    /** 限频：最多每 DRIVE_PUSH_INTERVAL_MS 推一次，中间的变化合并成最新一份。 */
+    private fun scheduleDrivePush() {
+        if (drivePushScheduled) return
+        drivePushScheduled = true
+        val wait = DRIVE_PUSH_INTERVAL_MS - (SystemClock.uptimeMillis() - lastDrivePushMs)
+        mainHandler.postDelayed(pushDriveRunnable, wait.coerceAtLeast(0))
+    }
+
+    private val pushDriveRunnable = Runnable {
+        drivePushScheduled = false
+        pushDrive(force = false)
+    }
+
+    /** 数值没变就不推（停车不动时没有流量）；刚连上旋钮时 force 补一份。 */
+    private fun pushDrive(force: Boolean) {
+        if (!bleConnected || !driveHaveData) return
+        val data = buildMap<String, Any> {
+            driveSpeed?.let { put("speed", it) }
+            put("throttle", driveThrottle)
+            put("brake", driveBrake)
+        }
+        if (!force && data == lastDrivePushed) return
+        lastDrivePushed = data
+        lastDrivePushMs = SystemClock.uptimeMillis()
+        bleManager?.write(data, slot = "drive")
+    }
+
+    // 模拟版没有真车速：8 秒一个周期，车速在 10~110 之间起伏，加速时踩油门、减速时踩刹车。
+    private var simulateDrivePhase = 0.0
+    private val simulateDriveTick = object : Runnable {
+        override fun run() {
+            simulateDrivePhase += 2 * PI * DRIVE_PUSH_INTERVAL_MS / 8000
+            val trend = cos(simulateDrivePhase)
+            driveSpeed = (60 + 50 * sin(simulateDrivePhase)).roundToInt()
+            driveThrottle = if (trend > 0) (trend * 60).roundToInt() else 0
+            driveBrake = if (trend < 0) (-trend * 70).roundToInt() else 0
+            driveHaveData = true
+            scheduleDrivePush()
+            mainHandler.postDelayed(this, DRIVE_PUSH_INTERVAL_MS)
+        }
+    }
+
     // ==================== 启动自检（通过才连旋钮、进车控） ====================
 
     private enum class StartupState { CHECKING, PASSED, FAILED }
@@ -1043,6 +1170,7 @@ class MainPlugin : KnobPlugin {
         // BLE 连接整个归插件自己管（见 BleManager），壳不插手认哪个设备、
         // 什么时候连——启动自检一通过就自己发起。
         bleManager?.start()
+        maybeStartDriveData()
         if (isAcStop(currentPageId)) refreshAcTemperatures()
         refreshCurrentPage()
     }
@@ -1379,6 +1507,7 @@ class MainPlugin : KnobPlugin {
         val retry = pendingPermissionRetry
         pendingPermissionRetry = null
         retry?.invoke(allGranted)
+        maybeStartDriveData() // 可能刚授了车速权限
     }
 
     /**
@@ -1645,6 +1774,8 @@ class MainPlugin : KnobPlugin {
     override fun onDestroy() {
         Log.i(tag, "MainPlugin.onDestroy")
         carControl?.unregisterListeners()
+        mainHandler.removeCallbacks(simulateDriveTick)
+        mainHandler.removeCallbacks(pushDriveRunnable)
         bleManager?.shutdown()
     }
 }

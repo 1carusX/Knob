@@ -107,10 +107,13 @@ class BleManager(context: Context, private val host: KnobHost) {
     // 挨得很近地连续调用（比如联动模式一次改温度会给主驾/副驾各触发一次监听
     // 回调），所以这里不能"来一个发一个"，得排队。因为每次 write() 发的都是
     // 当前完整状态快照（不是增量），排队没意义的中间状态直接覆盖丢弃即可，只
-    // 保留最新一份——这两个字段只在主线程碰（onCharacteristicWrite 回调发生在
-    // 蓝牙 Binder 线程，见下方，会先 post 回主线程再改这两个字段）。
+    // 保留最新一份。但"最新一份"要按消息种类分开算（write 的 slot 参数）：停靠点
+    // 同步、亮度、驾驶数据是互不相干的三种消息，共用一个排队位的话，频繁的
+    // 驾驶数据会把还没发出去的停靠点同步顶掉。每种各留最新一份，按先来后到发。
+    // 这两个字段只在主线程碰（onCharacteristicWrite 回调发生在蓝牙 Binder 线程，
+    // 见下方，会先 post 回主线程再改这两个字段）。
     private var writeInFlight = false
-    private var pendingWrite: ByteArray? = null
+    private val pendingWrites = LinkedHashMap<String, ByteArray>()
 
     // 连接建立后依次读设备信息服务里的这几个特征值（GATT 同一时刻只能有
     // 一个操作在飞，只能一个读完再读下一个），读完才通知"已连接"——那会
@@ -416,7 +419,7 @@ class BleManager(context: Context, private val host: KnobHost) {
                     keyEventCharacteristic = null
                     otaCharacteristic = null
                     writeInFlight = false
-                    pendingWrite = null
+                    pendingWrites.clear()
                     infoReadQueue.clear()
                     infoReadResults.clear()
                     // 升级成功后旋钮会自己重启断开，那时 ota 已经清空，不算失败
@@ -515,8 +518,8 @@ class BleManager(context: Context, private val host: KnobHost) {
             handleFirmwareInfoRead(g, characteristic, characteristic.value ?: ByteArray(0), status)
         }
 
-        // 显示同步特征值写完成的回执——收到这个才能发下一个排队的写，见 [pendingWrite]。
-        // 跑在蓝牙 Binder 线程，先 post 回主线程再碰 writeInFlight/pendingWrite。
+        // 显示同步特征值写完成的回执——收到这个才能发下一个排队的写，见 [pendingWrites]。
+        // 跑在蓝牙 Binder 线程，先 post 回主线程再碰 writeInFlight/pendingWrites。
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             if (characteristic.uuid == OTA_CHARACTERISTIC_UUID) {
                 mainHandler.post { onOtaWriteComplete(status) }
@@ -531,13 +534,12 @@ class BleManager(context: Context, private val host: KnobHost) {
                 // 有一次 OTA 在等这个显示写完成才能发 BEGIN（见 startOta）
                 val session = ota
                 if (session != null && !session.beginSent) {
-                    pendingWrite = null
+                    pendingWrites.clear()
                     sendOtaBegin(session)
                     return@post
                 }
-                val next = pendingWrite ?: return@post
-                pendingWrite = null
-                issueWrite(next)
+                val slot = pendingWrites.keys.firstOrNull() ?: return@post
+                issueWrite(pendingWrites.remove(slot)!!)
             }
         }
 
@@ -722,10 +724,12 @@ class BleManager(context: Context, private val host: KnobHost) {
 
     /**
      * 把 Map 编码成字节流写给 knob——只认值类型（Int/String/Boolean），不认
-     * key 名，字段意义由插件与固件约定。@return 是否成功接受了这次写（可能
-     * 排队等前一个写完成，不代表对方已收到；固件侧以串口日志为准）。
+     * key 名，字段意义由插件与固件约定。slot 是消息种类（停靠点同步 / 亮度 /
+     * 驾驶数据……），排队时同种只留最新一份，不同种互不覆盖，见 [pendingWrites]。
+     * @return 是否成功接受了这次写（可能排队等前一个写完成，不代表对方已收到；
+     * 固件侧以串口日志为准）。
      */
-    fun write(data: Map<String, Any>): Boolean {
+    fun write(data: Map<String, Any>, slot: String = "page"): Boolean {
         // 升级期间 OTA 独占写通道，显示同步直接丢弃（升级完旋钮会重启，重连后插件会重新同步一次）
         if (ota != null) return false
         if (gatt == null) {
@@ -739,8 +743,9 @@ class BleManager(context: Context, private val host: KnobHost) {
         val payload = encodeDisplayData(data)
         if (writeInFlight) {
             // 上一个写还没收到回执，这次的内容是完整状态快照、不是增量，
-            // 直接覆盖掉上一个还没发出去的排队内容即可，不用真排一条队列。
-            pendingWrite = payload
+            // 直接覆盖掉同一种还没发出去的排队内容即可。先删再放，排到队尾。
+            pendingWrites.remove(slot)
+            pendingWrites[slot] = payload
             return true
         }
         return issueWrite(payload)
@@ -822,7 +827,7 @@ class BleManager(context: Context, private val host: KnobHost) {
         }
         val session = OtaSession(firmware, sha256)
         ota = session
-        pendingWrite = null
+        pendingWrites.clear()
         logBoth("开始 OTA：${firmware.size} 字节，MTU=$negotiatedMtu，每包 ${otaChunkSize()} 字节")
         armOtaTimeout() // 等在飞的显示写完成也算在超时里，免得它的回执永远不来时卡住
         if (!writeInFlight) sendOtaBegin(session)

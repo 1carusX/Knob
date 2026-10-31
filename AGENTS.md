@@ -48,8 +48,8 @@
 
 | 文件 | 职责 |
 |------|------|
-| `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域路由 + 自管页面栈 + 启动自检（`runStartupCheck`：`init` 时只读检查 `CarControl.PERM_GROUPS` 里 `required` 的功能权限齐不齐、设备能不能初始化，通过才 `bleManager.start()` 连旋钮、显示车控页；没通过固定显示启动自检页，列出缺的权限和申请按钮，授权后自动重查）+ 车控权限：只由用户在启动自检页 / 自检页点「申请」按钮申请（`requestPermissionsByButton`，借壳 Activity 弹窗，结果经 `perm.result` 回来）；调温、调座椅等车控操作前只用 `hasPermissions` 查，缺了就不执行、记一笔，不会顺带弹窗 |
-| `src/main/kotlin/cn/icarus/knob/plugin/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道（自定义 GATT，不是标准 HID）：认哪个设备、扫描/配对、断线重连轮询、按键 NOTIFY 解码、显示数据 WRITE 编码，全部归插件自己管，不经壳。还负责读旋钮固件版本（标准 0x180A 服务）和固件 OTA 发送。生命周期绑定插件实例——重新导入 `plugin.dex` 会连带断开当前 BLE 连接（`MainPlugin` 通过 `onKeyEvent`/`onConnectionStateChanged`/`onCandidateFound`/`onFirmwareInfo`/`onOtaProgress`/`onOtaResult` 等回调属性接收事件，不是接口方法） |
+| `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域路由 + 自管页面栈 + 启动自检（`runStartupCheck`：`init` 时只读检查 `CarControl.PERM_GROUPS` 里 `required` 的功能权限齐不齐、设备能不能初始化，通过才 `bleManager.start()` 连旋钮、显示车控页；没通过固定显示启动自检页，列出缺的权限和申请按钮，授权后自动重查）+ 旋钮驾驶页的数据源（车速设备监听，限频推给旋钮，读不到车速就不推）+ 车控权限：只由用户在启动自检页 / 自检页点「申请」按钮申请（`requestPermissionsByButton`，借壳 Activity 弹窗，结果经 `perm.result` 回来）；调温、调座椅等车控操作前只用 `hasPermissions` 查，缺了就不执行、记一笔，不会顺带弹窗 |
+| `src/main/kotlin/cn/icarus/knob/plugin/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道（自定义 GATT，不是标准 HID）：认哪个设备、扫描/配对、断线重连轮询、按键 NOTIFY 解码、显示数据 WRITE 编码，全部归插件自己管，不经壳。还负责读旋钮固件版本（标准 0x180A 服务）和固件 OTA 发送。显示写入按消息种类（`write` 的 `slot`：停靠点 / 亮度 / 驾驶）分开排队，各留最新一份。生命周期绑定插件实例——重新导入 `plugin.dex` 会连带断开当前 BLE 连接（`MainPlugin` 通过 `onKeyEvent`/`onConnectionStateChanged`/`onCandidateFound`/`onFirmwareInfo`/`onOtaProgress`/`onOtaResult` 等回调属性接收事件，不是接口方法） |
 | `src/main/kotlin/cn/icarus/knob/plugin/FirmwareBundle.kt` | 从壳存下的插件包（zip）里读出 `firmware/firmware.bin` 并按 `manifest.json` 校验大小和 SHA-256；`MainPlugin.maybeStartOta` 据此决定要不要自动升级旋钮 |
 | `src/main/kotlin/cn/icarus/knob/plugin/CarControl.kt` | 车控引擎：BYDAUTO 设备初始化 / 空调（温度·开关·风量·风向·循环·分控）/ 座椅通风·加热 / 环境光传感器读取 |
 | `src/main/kotlin/cn/icarus/knob/plugin/PluginSelfTest.kt` | 一键全量自检：逐项回调结果，`MainPlugin` 的自检页（叠在停靠点上，返回键关闭）据此逐项显示，跑完列出现有功能缺的权限和申请按钮 |

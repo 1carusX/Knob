@@ -87,9 +87,9 @@ class CarControl(private val logger: KnobHost) {
     var onTemperatureChangedExternal: ((area: Int, value: Int) -> Unit)? = null
     var onLightIntensityChangedExternal: ((level: Int) -> Unit)? = null
 
-    // 车速/油门/制动的变化回调——官方文档说这几项的读取和监听都不需要
-    // 权限，先注册上试；回调跟上面几个一样在 AIDL 线程上触发，MainPlugin
-    // 要自己切回主线程。目前还没人订阅，只有自检注册监听器打日志验证。
+    // 车速/油门/制动的变化回调——回调跟上面几个一样在 AIDL 线程上触发，
+    // MainPlugin 要自己切回主线程。MainPlugin 订阅它们推给旋钮的驾驶页；
+    // 实车上要 SPEED_COMMON + SPEED_GET 才初始化得了（见 docs/验证结论.md #13）。
     var onSpeedChangedExternal: ((speedKmh: Double) -> Unit)? = null
     var onAccelerateDeepnessChangedExternal: ((percent: Int) -> Unit)? = null
     var onBrakeDeepnessChangedExternal: ((percent: Int) -> Unit)? = null
@@ -371,6 +371,7 @@ class CarControl(private val logger: KnobHost) {
     fun unregisterListeners() {
         try { acListener?.let { acDevice?.unregisterListener(it) } } catch (e: Throwable) { log("⚠️ 取消 AC 监听器失败: ${e.message}") }
         try { sensorListener?.let { sensorDevice?.unregisterListener(it) } } catch (e: Throwable) { log("⚠️ 取消 Sensor 监听器失败: ${e.message}") }
+        try { speedListener?.let { speedDevice?.unregisterListener(it) } } catch (e: Throwable) { log("⚠️ 取消 Speed 监听器失败: ${e.message}") }
     }
 
     fun setAcTemperature(context: Context, area: Int, value: Int): Int? {
@@ -544,6 +545,18 @@ class CarControl(private val logger: KnobHost) {
      * getInstance + enableDevice + 注册监听器，全程 try/catch，任何一步
      * 抛异常都打日志但不影响后面——目的是在真车上确认到底能不能读到。
      */
+    /**
+     * 车速设备还没初始化就初始化，返回设备（失败 null）。加锁：驾驶数据（启动自检
+     * 通过后的后台线程）和完整自检（另一个后台线程）可能同时走到这里，不锁的话两边
+     * 都看到 null、各初始化一次，同一个监听器注册两遍，每次车速变化回调两次。
+     */
+    @Synchronized
+    private fun ensureSpeedDevice(context: Context): BYDAutoSpeedDevice? {
+        if (speedDevice == null && !initSpeedDevice(context)) return null
+        return speedDevice
+    }
+
+    @Synchronized
     fun initSpeedDevice(context: Context): Boolean {
         return try {
             speedDevice = BYDAutoSpeedDevice.getInstance(context)
@@ -553,17 +566,25 @@ class CarControl(private val logger: KnobHost) {
             }
             log("✅ 获取 BYDAutoSpeedDevice 实例成功")
             enableDevice(context, speedDevice!!, "Speed 设备")
+            // 开车时这三项一秒变好多次，逐条打日志会把日志窗口刷满：每种只打第一条，
+            // 确认监听器真的有回调就够了。
+            val logged = BooleanArray(3)
+            fun logFirst(i: Int, msg: String) {
+                if (logged[i]) return
+                logged[i] = true
+                log("🔔 [Speed监听] $msg（首次，之后不再逐条打日志）")
+            }
             val listener = speedListener ?: object : AbsBYDAutoSpeedListener() {
                 override fun onSpeedChanged(value: Double) {
-                    log("🔔 [Speed监听] 车速变化 $value km/h")
+                    logFirst(0, "车速变化 $value km/h")
                     onSpeedChangedExternal?.invoke(value)
                 }
                 override fun onAccelerateDeepnessChanged(value: Int) {
-                    log("🔔 [Speed监听] 油门深度变化 $value%")
+                    logFirst(1, "油门深度变化 $value%")
                     onAccelerateDeepnessChangedExternal?.invoke(value)
                 }
                 override fun onBrakeDeepnessChanged(value: Int) {
-                    log("🔔 [Speed监听] 制动深度变化 $value%")
+                    logFirst(2, "制动深度变化 $value%")
                     onBrakeDeepnessChangedExternal?.invoke(value)
                 }
             }.also { speedListener = it }
@@ -576,14 +597,32 @@ class CarControl(private val logger: KnobHost) {
         }
     }
 
+    /** 驾驶页的一份快照：读不到的项是 null。 */
+    class DriveSnapshot(val speedKmh: Double?, val accelerate: Int?, val brake: Int?)
+
+    /**
+     * 初始化车速设备（顺带注册监听器，之后的变化走 on*ChangedExternal 回调）并读一次
+     * 当前值，给驾驶页当起点。设备初始化失败返回 null；单项读失败那一项是 null。
+     */
+    fun startDriveData(context: Context): DriveSnapshot? {
+        val dev = ensureSpeedDevice(context) ?: return null
+        fun <T> read(label: String, block: () -> T): T? = try {
+            block()
+        } catch (e: Throwable) {
+            log("⚠️ 读$label 失败: ${e.javaClass.simpleName} - ${e.message}")
+            null
+        }
+        return DriveSnapshot(read("车速") { dev.getCurrentSpeed() }, read("油门深度") { dev.getAccelerateDeepness() },
+            read("制动深度") { dev.getBrakeDeepness() })
+    }
+
     /**
      * 读一次当前车速、油门深度、制动深度，各自独立 try/catch，便于区分哪个能读哪个被拒。
      * 设备初始化失败、或者三项一个都没读到就抛异常——自检靠异常判定失败，
      * 以前这里把异常全吞了，真车上初始化就被拒，自检还照样报通过。
      */
     fun probeSpeed(context: Context): String {
-        if (speedDevice == null && !initSpeedDevice(context)) throw IllegalStateException("初始化 Speed 设备失败，见上方")
-        val dev = speedDevice ?: throw IllegalStateException("初始化 Speed 设备失败，见上方")
+        val dev = ensureSpeedDevice(context) ?: throw IllegalStateException("初始化 Speed 设备失败，见上方")
         var ok = 0
         try {
             log("◀ 车速 getCurrentSpeed() = ${dev.getCurrentSpeed()} km/h")

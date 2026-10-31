@@ -2,7 +2,7 @@
 # 原理见 render.cpp 开头的注释。需要 CMake、gcc/g++ 和 zlib 开发头文件，别的都不用。
 #
 #   cmake -B build                           # 第一次先配置（之后改了代码直接 build 就行）
-#   cmake --build build -j                   # 编译并渲染 17 张静态图到 out/（2 倍放大）
+#   cmake --build build -j                   # 编译并渲染 23 张静态图到 out/（2 倍放大）
 #   cmake --build build -j --target anim     # 动态效果，输出动画 PNG 到 out/anim/
 #   cmake -B build -DSCALE=1                 # 原始 240×240
 #   cmake -B build -DLVGL_DIR=<路径>          # lib/lvgl 子模块没初始化时，指向别处的同版本 LVGL

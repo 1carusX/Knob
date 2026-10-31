@@ -201,3 +201,11 @@ bool encoder_take_double_click() {
 bool encoder_is_button_pressed() {
     return digitalRead(ENC_PIN_SW) == LOW; // 接线是按下时低电平（上拉），跟 encoder_poll_button() 一致
 }
+
+bool encoder_is_button_down() {
+    return s_btn_pressed;
+}
+
+bool encoder_is_idle() {
+    return !s_btn_pressed && !s_click_pending && !s_click_flag && !s_double_click_flag && !s_long_flag;
+}

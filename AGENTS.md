@@ -63,9 +63,9 @@
 |------|------|
 | `include/config.h` | 引脚与板子配置（`BOARD_PCB`（V1）/ `BOARD_PCB_V2` / `BOARD_DEVKIT`，由 `platformio.ini` 的 env 定义）、板子名 `BOARD_NAME`（`pcb` / `pcb_v2` / `devkit`，插件按它确认固件给哪块板子） |
 | `src/ble.cpp` | 自定义 GATT（按键事件 / 显示同步 / OTA 三个特征值）+ 设备信息服务（固件版本 0x2A26、板子名 0x2A27）；OTA 协议见文件内 OTA 一节和 `docs/项目历程与架构.md` §四 |
-| `src/main.cpp` | LVGL 界面、编码器交互、各状态画面（含"固件升级"进度画面，OTA 完成后到点重启） |
+| `src/main.cpp` | LVGL 界面、编码器交互、各状态画面（含"固件升级"进度画面，OTA 完成后到点重启）；停靠点画面闲置 10 秒自己切到驾驶页（车速/油门/刹车），第一次操作切回来、这一下只唤醒不执行（`update_drive`），插件的当前停靠点不变 |
 | `VERSION` / `scripts/version.py` | 人工维护的版本号 + 编译时拼上 git 信息生成 `FW_VERSION`（`0.1.0+<提交>[.dirty.<改动指纹>]`），代码一变版本号就变 |
-| `src/fonts/` | LVGL 字体（数字 Barlow Semi Condensed、中文 Noto Sans SC，只收录用到的字，新增上屏中文要把三份 `font_zh_*` 都重新生成；`font_num_92/80/44` 是等宽数字，重新生成前要先用同目录 `freeze_tnum.mjs`（Node，不装包）把 tnum 字形固化进字体，否则拧动时数字会左右跳；做法见 `docs/设计/旋钮圆屏UI/README.md`「固件实现」）。同目录 `OFL-*.txt` 是两款字体的许可证（SIL OFL 1.1），字体子集随固件分发就必须带着，不能删 |
+| `src/fonts/` | LVGL 字体（数字 Barlow Semi Condensed、中文 Noto Sans SC，只收录用到的字，新增上屏中文要把三份 `font_zh_*` 都重新生成；`font_num_92/80/44/22` 是等宽数字，重新生成前要先用同目录 `freeze_tnum.mjs`（Node，不装包）把 tnum 字形固化进字体，否则拧动时数字会左右跳；做法见 `docs/设计/旋钮圆屏UI/README.md`「固件实现」）。同目录 `OFL-*.txt` 是两款字体的许可证（SIL OFL 1.1），字体子集随固件分发就必须带着，不能删 |
 | `simulate/` | 电脑上的屏幕模拟（CMake 工程）：`render.cpp` 直接 `#include "../src/main.cpp"`，把 Arduino/屏幕/旋钮/BLE 换成假实现，用真 LVGL 渲染各状态截图和动画 PNG（APNG 由 render 自己写，不依赖图像库）；改界面先在这里对照设计稿，不用烧板子 |
 
 > 新增车控功能 = 只改插件（`CarControl.kt` 加方法 + `MainPlugin.kt` 加一条 `when` 分支）+ 重新 `pluginDex`，**壳不用动、不用重签**。

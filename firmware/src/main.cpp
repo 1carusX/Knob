@@ -15,6 +15,8 @@
 //
 // 屏幕同时还要同步配对/连接状态（未连接、正在配对、刚配对成功、
 // 断开重连），不是一直都在显示手机推来的数据——见下面的 ScreenState。
+// 停靠点画面 DRIVE_IDLE_MS 没有操作会切到驾驶页（车速/油门/刹车），第一次
+// 操作回原来的停靠点，见 s_drive_showing。
 // 方案见 docs/旋钮-最小硬件调试方案.md、docs/蓝牙控制配件-方案.md。
 
 #include <Arduino.h>
@@ -44,6 +46,8 @@ LV_FONT_DECLARE(font_num_80); // 分控正在编辑的那一侧
 LV_FONT_DECLARE(font_num_44); // 分控参考侧、配对码
 LV_FONT_DECLARE(font_num_34); // 未配对时的设备名，符号集 "Knob-0123456789ABCDEF"（见 ble.cpp 的 build_device_name）
 LV_FONT_DECLARE(font_num_28); // 大数字后面的单位，只有 "%°"
+LV_FONT_DECLARE(font_num_22); // 驾驶页两头的油门/刹车百分比，"0123456789"（等宽数字，同 92/80/44）
+LV_FONT_DECLARE(font_num_13); // 驾驶页百分比后面的 "%"，只有这一个字符
 
 // 后面需要更新的 LVGL 控件都存成全局变量，这样 build_ui()
 // （只创建一次）和 redraw()（数值变化时更新）才都能访问到。
@@ -71,6 +75,7 @@ enum DialMode {
     DIAL_PASSKEY, // 配对码：淡蓝整圈 + 顶部一小段亮蓝
     DIAL_OK,      // 配对/连接成功：绿色整圈 + 对勾背后一团淡绿
     DIAL_OTA,     // 固件升级：整圈轨道 + 绿色进度 + 头部白点
+    DIAL_DRIVE,   // 驾驶页：270° 刻度环从正上方分开，右半油门（绿）、左半刹车（红）
 };
 // 下面这几个只在 loop() 线程上读写（redraw_*() 和绘制回调都在那里跑），
 // 不用像 BLE 回调改的那些状态一样标 volatile。
@@ -196,6 +201,27 @@ static volatile bool s_have_display_data = false; // 有没有收到过手机推
 // 点都不画；否则画 sub_count 个点，sub_index（0-based）那个是白色。
 static volatile int16_t s_sub_count = 0;
 static volatile int16_t s_sub_index = 0;
+
+// 驾驶页（车速/油门/刹车，只读）。不是停靠点，是停靠点画面闲置
+// DRIVE_IDLE_MS 之后的待机画面：插件里的当前停靠点不变，旋钮自己切过去，
+// 第一次操作（转动/按下）切回来，这一下只唤醒、不执行。驾驶数据是插件单独
+// 推的一种消息（见 on_display_update），跟当前停靠点无关，不管显示哪页都存
+// 最新一份。s_drive_have_speed = 最新一条带了车速（插件读不到车速时不带）；
+// 从没收到过车速就不切驾驶页（只能看到 "--"）。这几个由 BLE 线程写，标 volatile。
+constexpr uint32_t DRIVE_IDLE_MS = 10000;
+static volatile int16_t s_drive_speed = 0;
+static volatile int16_t s_drive_throttle = 0;
+static volatile int16_t s_drive_brake = 0;
+static volatile bool s_drive_have_speed = false;
+static volatile bool s_drive_changed = false; // 收到新的驾驶数据，驾驶页正显示着的话 loop() 重画
+
+// 下面几个只在 loop() 线程上读写。
+static bool s_drive_showing = false;     // 现在显示的是驾驶页（而不是停靠点）
+static uint32_t s_last_input_ms = 0;     // 上一次旋钮操作（转动/按着）的时间，闲置计时从这里算
+// 在驾驶页按下按键唤醒时置 true：这一下按键（单击/双击/长按，含双击的第二下）
+// 都只用来唤醒，事件全部丢掉、不画长按进度环。等旋钮模块彻底空闲
+// （encoder_is_idle()：松手、没有等双击窗口的单击、事件都取走了）才清掉。
+static bool s_swallow_button = false;
 
 // 配对成功提示还没消失之前，手机如果推了新数据，先缓存在这里，等提示
 // 消失后再应用——不能提示还没显示完就被数据覆盖掉。多次收到就直接
@@ -433,6 +459,34 @@ static void draw_seat_dial(lv_layer_t *layer) {
     }
 }
 
+// 驾驶页：跟温度环一样 270°、缺口朝下，从正上方 270° 分开——往右顺时针是
+// 油门、往左逆时针是刹车，各 0~100% 占 135°，走到缺口两侧。每 5% 一根刻度、
+// 整 25% 长一点；踩下去的部分着色，当前值处一个同色亮点，0% 不画亮点。
+// 正上方一根 0% 刻线（同座椅"关"那根）。没有车速数据时环全灰。
+static float pedal_angle(int pct, bool throttle) { return throttle ? 270.0f + pct * 1.35f : 270.0f - pct * 1.35f; }
+
+static void draw_pedal_half(lv_layer_t *layer, int pct, bool throttle, lv_color_t color) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    for (int v = 5; v <= 100; v += 5) {
+        bool major = v % 25 == 0;
+        lv_color_t c = (pct > 0 && v <= pct) ? color : color_tick_off();
+        draw_tick(layer, major ? 100 : 104, 113, pedal_angle(v, throttle), c, major ? 3 : 2);
+    }
+    if (pct <= 0) return;
+    int32_t x, y;
+    polar(DIAL_MARKER_R, pedal_angle(pct, throttle), &x, &y);
+    draw_dot(layer, x, y, 18, color, LV_OPA_30); // 光晕
+    draw_dot(layer, x, y, 9, color_text());
+}
+
+static void draw_drive_dial(lv_layer_t *layer) {
+    bool have = s_drive_have_speed;
+    draw_pedal_half(layer, have ? s_drive_brake : 0, false, color_red());
+    draw_pedal_half(layer, have ? s_drive_throttle : 0, true, color_ok());
+    draw_tick(layer, 99, 117, 270, color_text2(), 2);
+}
+
 // 设计稿的 24×24 线条图标（蓝牙符文 / 对勾），按 s_icon_size 放大，中心画在
 // (DIAL_CX, s_icon_cy)。每段都是圆头线，拐角自然是圆的。
 static void draw_icon(lv_layer_t *layer) {
@@ -583,6 +637,9 @@ static void dial_draw_cb(lv_event_t *e) {
         case DIAL_OK:
             draw_ring(layer, 110, 3, 0, 360, color_ok(), false);
             draw_dot(layer, DIAL_CX, s_icon_cy, 52, color_ok(), 36); // 对勾背后，不透明度约 14%
+            break;
+        case DIAL_DRIVE:
+            draw_drive_dial(layer);
             break;
         case DIAL_OTA:
             draw_ring(layer, 110, 5, 0, 360, color_track(), false);
@@ -769,7 +826,49 @@ static void redraw_split(bool dirty) {
     }
 }
 
+// 驾驶页：中间只有车速（不带单位），环的两头是刹车（左下）/ 油门（右下）的
+// 百分比，数字 22px + "%" 13px 共用基线、整体居中在 r 98、118° / 62° 处，
+// 正好在缺口两侧。踩着时用各自的颜色，0% 变暗。没有车速数据时显示 "--"、
+// 两头读数不显示。
+constexpr int32_t DRIVE_NUMBER_BASE = 157; // 车速 92px 数字的基线（数字竖直居中在圆心）
+constexpr int32_t PEDAL_BASE_DY = 9;       // 两头读数的基线 = 读数中心 y + 这个值
+
+static void place_pedal(lv_obj_t *num, lv_obj_t *pct_sign, int pct, float deg, lv_color_t color) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    int32_t cx, cy;
+    polar(98, deg, &cx, &cy);
+    lv_color_t c = pct > 0 ? color : color_text3();
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", pct);
+    place_digits(num, buf, &font_num_22, c, 0, 0, cy + PEDAL_BASE_DY);
+    place_digits(pct_sign, "%", &font_num_13, c, 0, 0, cy + PEDAL_BASE_DY);
+    // [数字][%] 作为一组，整体水平居中在 cx
+    lv_obj_update_layout(num);
+    int32_t wn = lv_obj_get_width(num), wp = lv_obj_get_width(pct_sign);
+    int32_t left = cx - DIAL_CX - (wn + wp) / 2;
+    lv_obj_set_x(num, left + wn / 2);
+    lv_obj_set_x(pct_sign, left + wn + wp / 2);
+}
+
+static void redraw_drive() {
+    reset_screen(DIAL_DRIVE);
+    if (!s_drive_have_speed) {
+        place_digits(s_label_value, "--", &font_num_92, color_text3(), 17, 0, DRIVE_NUMBER_BASE);
+        return;
+    }
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", s_drive_speed);
+    place_digits(s_label_value, buf, &font_num_92, color_text(), -1, 0, DRIVE_NUMBER_BASE);
+    place_pedal(s_label_left, s_label_sub_left, s_drive_brake, 118, color_red());
+    place_pedal(s_label_right, s_label_sub_right, s_drive_throttle, 62, color_ok());
+}
+
 static void redraw_normal() {
+    if (s_drive_showing && s_have_display_data) {
+        redraw_drive();
+        return;
+    }
     if (!s_have_display_data) {
         // 已经连上了，但手机还没推过任何数据（比如刚配对完，提示消失
         // 时手机还没来得及同步）——不能显示上一次残留的 title/value，
@@ -878,6 +977,7 @@ static void on_disconnected() {
     if (!s_ota_done) s_screen_state = SCREEN_DISCONNECTED;
     s_have_display_data = false;
     s_display_pending = false;
+    s_drive_have_speed = false; // 重连后插件会重推一份
     s_needs_redraw = true;
 }
 
@@ -931,6 +1031,17 @@ static void on_display_update(const DisplayData &data) {
     if (data.has("brightness")) {
         display_set_brightness((uint8_t)data.getInt("brightness"));
         if (!data.has("title")) return; // 纯亮度推送，没有页面数据，到此为止
+    }
+
+    // 驾驶数据也是独立的一条消息（"throttle"/"brake" 0~100，读得到车速才带
+    // "speed"，单位 km/h），只存最新一份，驾驶页正显示着才重画（见 loop()）。
+    if (data.has("throttle")) {
+        s_drive_have_speed = data.has("speed");
+        s_drive_speed = data.getInt("speed");
+        s_drive_throttle = data.getInt("throttle");
+        s_drive_brake = data.getInt("brake");
+        s_drive_changed = true;
+        if (!data.has("title")) return;
     }
 
     // 升级期间插件会暂停显示同步；万一还是来了页面数据，也不能把升级
@@ -1124,9 +1235,10 @@ static void check_enter_commit_progress() {
         press_start_ms = 0;
         return;
     }
-    if (s_screen_state != SCREEN_NORMAL || !s_have_display_data) {
+    if (s_screen_state != SCREEN_NORMAL || !s_have_display_data || s_drive_showing || s_swallow_button) {
         // 没有可编辑内容（未连接/配对提示/还没收到过数据）时不显示，
-        // 这些状态下长按也不会真正触发提交。
+        // 这些状态下长按也不会真正触发提交。驾驶页上、以及按下去唤醒的
+        // 这一下按住不放时也不显示——这一下只唤醒，长按会被丢掉。
         return;
     }
     if (press_start_ms == 0) {
@@ -1147,6 +1259,60 @@ static void check_enter_commit_progress() {
     uint32_t fill_span = ENC_LONG_PRESS_MS - ENC_COMMIT_PROGRESS_START_MS;
     int percent = (int)((uint64_t)fill_elapsed * 100 / fill_span);
     set_overlay(percent > 100 ? 100 : percent, color_pending());
+}
+
+// 停靠点画面闲置够久 → 驾驶页。还没提交的改动（琥珀色）直接丢掉：它本来就
+// 没发给手机，车上什么都没变；回来时显示的是手机上次同步的值。
+static void enter_drive() {
+    s_drive_showing = true;
+    s_value = s_synced_value;
+    Serial.println("[DRIVE] idle -> drive page");
+    redraw();
+}
+
+// 驾驶页上第一次操作 → 回到原来的停靠点（插件那边的当前停靠点一直没变）。
+static void leave_drive(bool by_button) {
+    s_drive_showing = false;
+    if (by_button) s_swallow_button = true;
+    Serial.println("[DRIVE] wake -> back to stop");
+    redraw();
+}
+
+// 每次 loop()：处理驾驶页的进出。返回 true = 这次的转动量要丢掉（唤醒用掉了）。
+static bool update_drive(int16_t diff, bool btn_down) {
+    uint32_t now = millis();
+    if (s_screen_state != SCREEN_NORMAL || !s_have_display_data) {
+        // 系统画面（未连接/配对/升级）不受影响；回到正常画面时从头计时
+        s_drive_showing = false;
+        s_last_input_ms = now;
+        return false;
+    }
+    if (s_drive_showing) {
+        if (diff != 0 || btn_down) {
+            s_last_input_ms = now;
+            leave_drive(btn_down);
+            return true;
+        }
+        if (s_drive_changed) {
+            s_drive_changed = false;
+            redraw();
+        }
+        return false;
+    }
+    s_drive_changed = false; // 不在驾驶页，存着就行，不用重画
+    if (diff != 0 || btn_down || s_commit_holding) {
+        s_last_input_ms = now;
+    } else if (s_drive_have_speed && (uint32_t)(now - s_last_input_ms) >= DRIVE_IDLE_MS) {
+        enter_drive();
+    }
+    return false;
+}
+
+// 唤醒的那一下按键彻底结束（旋钮模块空闲：松手、单击不再等双击窗口、事件
+// 都取走了）才结束吞事件。放在取完按键事件之后调：这一下产生的单击要等双击
+// 窗口过了才报出来，那时 encoder_is_idle() 还是 false，先被丢掉、下一轮才清。
+static void update_swallow() {
+    if (s_swallow_button && encoder_is_idle()) s_swallow_button = false;
 }
 
 void setup() {
@@ -1215,9 +1381,14 @@ void loop() {
         redraw();
     }
 
+    // 驾驶页的进出（闲置计时、第一次操作唤醒）。唤醒用掉的转动量不再拿去改数值。
+    int16_t diff = encoder_get_diff();
+    // 用消抖后的状态：按键抖动、干扰不会把驾驶页误唤醒（再顺带吞掉一次真单击）
+    bool btn_down = encoder_is_button_down();
+    if (update_drive(diff, btn_down)) diff = 0;
+
     // 旋钮转动只在真正显示手机数据时才有意义（未连接/配对提示阶段
     // 没有可编辑的值，s_min/s_max 也可能是上一次连接时的残留）。
-    int16_t diff = encoder_get_diff();
     if (diff != 0 && s_screen_state == SCREEN_NORMAL && s_have_display_data) {
         // 只改本地这份编辑副本、立刻重绘——不通知手机，转动过程中不会
         // 有蓝牙往返，也就没有转动和屏幕更新之间的延迟。s_min/s_max
@@ -1244,17 +1415,29 @@ void loop() {
     // 单击/双击对应的键码特意反过来分配（单击=CycleSub、双击=Tab），见
     // 文件顶部的说明：双击判定窗口没跟上时最坏也就是原地切一次子项，
     // 不会被误判成跳到完全不相关的下一个停靠点。
-    if (encoder_take_click() && s_screen_state == SCREEN_NORMAL) {
+    //
+    // 按键事件每次都要取走（不取会留到下次），但在驾驶页唤醒的那一下按键里
+    // 发生的全部丢掉：这一下只唤醒，不切子项、不跳停靠点、不提交。
+    bool click = encoder_take_click();
+    bool double_click = encoder_take_double_click();
+    bool long_press = encoder_take_long_press();
+    if (s_swallow_button) {
+        if (click || double_click || long_press) Serial.println("[BTN] swallowed (wake from drive page)");
+        click = double_click = long_press = false;
+    }
+    update_swallow();
+
+    if (click && s_screen_state == SCREEN_NORMAL) {
         Serial.println("[BTN] click -> CYCLE_SUB (座椅/分控子项切换)");
         ble_send_key(KEYCODE_CYCLE_SUB);
     }
 
-    if (encoder_take_double_click() && s_screen_state == SCREEN_NORMAL) {
+    if (double_click && s_screen_state == SCREEN_NORMAL) {
         Serial.println("[BTN] double-click -> TAB (下一个停靠点)");
         ble_send_key(KEYCODE_TAB);
     }
 
-    if (encoder_take_long_press() && s_screen_state == SCREEN_NORMAL && s_have_display_data) {
+    if (long_press && s_screen_state == SCREEN_NORMAL && s_have_display_data) {
         // 长按 = 确认：把本地编辑到的最终值带给手机，插件收到后才会
         // 真正调用车控接口——转动过程中不会触发任何车控调用，只有这
         // 一下会。

@@ -355,6 +355,73 @@ leg2.body = leg2.body.replace("</svg>", circle(110, 221, 5, { fill: "#FFFFFF" })
 boards.push(["LegacyLink.dc.html", "现状 · 联动（静止时数字是灰色）", leg1]);
 boards.push(["LegacySplit.dc.html", "现状 · 分控", leg2]);
 
+// 第五排（新增）：驾驶数据——车速 / 油门 / 刹车，只读展示，拧旋钮不改任何东西。
+// 数据来自车速设备监听：车速 0~282 km/h（SDK 的 SPEED_MAX），油门/刹车深度 0~100%。
+// 整圈 270° 刻度环（缺口朝下）从正上方分成两半：往右是油门（绿），往左是刹车（红），
+// 各 0~100%；环的两头（缺口两侧）是两个百分比读数，中间只有车速。
+const THROTTLE = OK, BRAKE = STOPS[3];
+
+// 正上方 270° 是 0%，油门顺时针走到右下 45°（405°），刹车逆时针走到左下 135°
+const pedalAngle = (pct, side) => (side === "R" ? 270 + (pct / 100) * 135 : 270 - (pct / 100) * 135);
+
+function pedalHalf(pct, side, color) {
+    const out = [];
+    for (let v = 5; v <= 100; v += 5) {
+        const major = v % 25 === 0;
+        out.push(line(major ? 100 : 104, 113, pedalAngle(v, side), pct > 0 && v <= pct ? color : "#2B313A", major ? 2.4 : 1.6));
+    }
+    if (pct > 0) out.push(marker(93, pedalAngle(pct, side), color));
+    return out.join("");
+}
+
+// 正上方一根 0% 刻线（跟座椅「关」那根一样），两半从这里分开
+const pedalRing = (brake, throttle) =>
+    pedalHalf(brake, "L", BRAKE) + pedalHalf(throttle, "R", THROTTLE) + line(99, 117, 270, TXT2, 2);
+
+// 环头尾的读数：中心在 r 98、角度 118°（左，刹车）/ 62°（右，油门），刚好落在缺口两侧
+function pedalValue(pct, side, color) {
+    const [x, y] = pt(98, side === "R" ? 62 : 118);
+    return `<div style="position: absolute; left: ${f2(x - 30)}px; width: 60px; top: ${f2(y - 11)}px; text-align: center; ` +
+        `font-family: ${NUM}; font-size: 22px; font-weight: 500; line-height: 1; color: ${pct > 0 ? color : TXT3}">` +
+        `${pct}<span style="font-size: 13px">%</span></div>`;
+}
+
+// 不带单位，92px 数字竖直居中在圆心（top 74 + 一半字高 46 = 120）
+const speedNum = (v, color = TXT) => text(v, 74, 92, color, NUM, 500, -1);
+
+const drivePage = (name, speed, brake, throttle) =>
+    page(name, pedalRing(brake, throttle),
+        speedNum(speed) + pedalValue(brake, "L", BRAKE) + pedalValue(throttle, "R", THROTTLE));
+
+boards.push(["DriveStop.dc.html", "停车踩着刹车", drivePage("驾驶 · 停车", 0, 30, 0)]);
+boards.push(["DriveCruise.dc.html", "62 km/h 踩油门", drivePage("驾驶 · 加速", 62, 0, 28)]);
+boards.push(["DriveFast.dc.html", "128 km/h 油门踩深", drivePage("驾驶 · 高速", 128, 0, 85)]);
+boards.push(["DriveBrake.dc.html", "重刹", drivePage("驾驶 · 重刹", 48, 72, 0)]);
+boards.push(["DriveNoData.dc.html", "读不到车速数据",
+    page("驾驶 · 无数据", pedalRing(0, 0),
+        text("-&#8202;&#8202;&#8202;-", 74, 92, TXT3, NUM, 500))]);
+
+// 驾驶页的进出：不是双击循环里的停靠点，是旋钮闲置时的待机画面。
+// 一张流程图：左边任意停靠点（这里用联动），右边驾驶页，上下两条箭头。
+const mini = (b) =>
+    `<div style="width: 420px; height: 420px; overflow: hidden; flex: none"><div style="transform: scale(0.75); transform-origin: 0 0">${b.body}</div></div>`;
+const flowLabel = (t, sub) =>
+    `<div style="font-size: 22px; color: #F2F4F7; letter-spacing: 1px">${t}</div>` +
+    `<div style="font-size: 15px; color: #9AA1AB; line-height: 1.6; margin-top: 6px">${sub}</div>`;
+const arrow = (dir, color) => {
+    const d = dir === "R" ? "M 10 20 H 350 M 330 6 L 350 20 L 330 34" : "M 350 20 H 10 M 30 6 L 10 20 L 30 34";
+    return `<svg aria-hidden="true" width="360" height="40" viewBox="0 0 360 40"><path d="${d}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+};
+const flowBody = `<div style="width: 1360px; height: 640px; box-sizing: border-box; padding: 56px; background: #101114; color: #F2F4F7; font-family: ${ZH}; display: flex; align-items: center; justify-content: space-between">
+${mini(page("联动", tempRing(22), title("联动") + bigTemp(22)))}
+<div style="display: flex; flex-direction: column; gap: 72px; width: 380px">
+<div style="display: flex; flex-direction: column; align-items: center; text-align: center">${flowLabel("10 秒没有操作", "转动、单击、双击、长按都算操作<br>没提交的琥珀色改动直接丢掉")}${arrow("R", TXT2)}</div>
+<div style="display: flex; flex-direction: column; align-items: center; text-align: center">${arrow("L", OK)}${flowLabel("第一次操作：回到原来的页面", "转动、单击、双击、长按都行<br>这一下只用来唤醒，不执行")}</div>
+</div>
+${mini(drivePage("驾驶", 62, 0, 28))}
+</div>`;
+boards.push(["DriveFlow.dc.html", "驾驶页的进出（待机画面）", { name: "驾驶页的进出", body: flowBody, head: FONTS, w: 1360, h: 640 }]);
+
 // ---------- 规格画板 ----------
 const sw = [["背景 中心", BG_C], ["背景 边缘", BG_E], ["主文字", TXT], ["次文字", TXT2], ["弱 / 未激活刻度", TXT3], ["轨道", TRACK],
     ["冷 1 · 蓝", STOPS[0]], ["冷 2 · 青", STOPS[1]], ["暖 1 · 珊瑚", STOPS[2]], ["暖 2 · 红", STOPS[3]],
@@ -397,6 +464,7 @@ const rows = [
     ["连接与系统状态", ["Unpaired.dc.html", "Passkey.dc.html", "Waiting.dc.html", "Connected.dc.html", "Ota.dc.html"]],
     ["现状（对比用）", ["LegacyLink.dc.html", "LegacySplit.dc.html"]],
     ["规格", ["Spec.dc.html"]],
+    ["驾驶数据（新增）", ["DriveStop.dc.html", "DriveCruise.dc.html", "DriveFast.dc.html", "DriveBrake.dc.html", "DriveNoData.dc.html", "DriveFlow.dc.html"]],
 ];
 const byFile = new Map(boards.map(([f, t, b]) => [f, [t, b]]));
 const bentries = {}, notes = {}, order = [];
@@ -405,7 +473,7 @@ rows.forEach(([rt, files], idx) => {
     notes[`row${idx}`] = { x: 0, y: y - 260, text: rt, kind: "title1", maxW: 3000 };
     let h = 0, x = 0;
     for (const f of files) {
-        const [w, hh] = f === "Spec.dc.html" ? [1360, 760] : [560, 560];
+        const [w, hh] = f === "Spec.dc.html" ? [1360, 760] : f === "DriveFlow.dc.html" ? [1360, 640] : [560, 560];
         bentries[f] = { x, y, w, h: hh, title: byFile.get(f)[0] };
         order.push(f);
         x += w + 80;
@@ -435,6 +503,8 @@ const PNG = {
     "Unpaired.dc.html": "unpaired", "Passkey.dc.html": "passkey", "Waiting.dc.html": "waiting",
     "Connected.dc.html": "connected", "Ota.dc.html": "ota",
     "LegacyLink.dc.html": "legacy-link", "LegacySplit.dc.html": "legacy-split", "Spec.dc.html": "spec",
+    "DriveStop.dc.html": "drive-stop", "DriveCruise.dc.html": "drive-cruise", "DriveFast.dc.html": "drive-fast",
+    "DriveBrake.dc.html": "drive-brake", "DriveNoData.dc.html": "drive-nodata", "DriveFlow.dc.html": "drive-flow",
 };
 const pngName = new Map(order.map((f, i) => [f, `${String(i + 1).padStart(2, "0")}-${PNG[f]}.png`]));
 

@@ -79,6 +79,8 @@ void display_set_brightness(uint8_t) {}
 
 static int16_t g_enc_diff = 0;
 static bool g_enc_pressed = false;
+static bool g_enc_click = false;         // 置 true = 下一次 loop() 报一次单击
+static bool g_enc_click_pending = false; // 松手后、还在等双击窗口（单击还没报出来）
 
 void encoder_init() {}
 int16_t encoder_get_diff() {
@@ -87,10 +89,16 @@ int16_t encoder_get_diff() {
     return d;
 }
 void encoder_poll_button() {}
-bool encoder_take_click() { return false; }
+bool encoder_take_click() {
+    bool c = g_enc_click;
+    g_enc_click = false;
+    return c;
+}
 bool encoder_take_long_press() { return false; }
 bool encoder_take_double_click() { return false; }
 bool encoder_is_button_pressed() { return g_enc_pressed; }
+bool encoder_is_button_down() { return g_enc_pressed; }
+bool encoder_is_idle() { return !g_enc_pressed && !g_enc_click_pending && !g_enc_click; }
 
 // ==================== BLE ====================
 
@@ -103,7 +111,8 @@ static bool g_has_bond = false;
 
 void ble_init() {}
 bool ble_is_paired() { return true; }
-void ble_send_key(int16_t) {}
+static int g_keys_sent = 0; // 固件发给手机的按键次数，检查唤醒那一下有没有被吞掉
+void ble_send_key(int16_t) { g_keys_sent++; }
 void ble_send_key_with_value(int16_t, int16_t) {}
 void ble_on_display_update(void (*cb)(const DisplayData &)) { g_on_display = cb; }
 void ble_on_passkey(void (*cb)(uint32_t)) { g_on_passkey = cb; }
@@ -349,6 +358,12 @@ static void push_ac_split(bool main_side, int16_t main_v, int16_t deputy_v) {
 static void push_seat(const char *title, int16_t index, int16_t level) {
     Push().s("layout", "seat").s("title", title).i("value", level).i("min", -2).i("max", 2).i("sub_count", 4).i("sub_index", index).send();
 }
+// 驾驶数据（插件单独推的一种消息）；speed < 0 = 读不到车速，不带 speed 字段
+static void push_drive(int16_t speed, int16_t brake, int16_t throttle) {
+    Push p;
+    if (speed >= 0) p.i("speed", speed);
+    p.i("throttle", throttle).i("brake", brake).send();
+}
 
 // ==================== 动画 ====================
 //
@@ -526,6 +541,58 @@ int main(int argc, char **argv) {
     push_seat("副驾", 1, 0);
     step();
     snap("seat-off");
+
+    // --- 驾驶页：停靠点画面闲置 DRIVE_IDLE_MS 自动切过去 ---
+    push_ac_link(22);
+    g_enc_diff = 2; // 转了没提交，切过去时这个改动会被丢掉
+    step();
+    push_drive(62, 0, 28);
+    delay(DRIVE_IDLE_MS + 100);
+    step();
+    snap("drive-cruise");
+    push_drive(0, 30, 0);
+    step();
+    snap("drive-stop");
+    push_drive(128, 0, 85);
+    step();
+    snap("drive-fast");
+    push_drive(48, 72, 0);
+    step();
+    snap("drive-brake");
+    push_drive(-1, 0, 0);
+    step();
+    snap("drive-nodata");
+    push_drive(62, 0, 28);
+    step();
+    g_enc_diff = 1; // 第一次操作：只唤醒，回联动 22（不是 23，也不是之前没提交的 24）
+    step();
+    snap("drive-wake");
+
+    // 按键唤醒：按下就回停靠点，这一下的单击（松手后过了双击窗口才报出来）
+    // 要被丢掉、不发给手机；之后再单击才正常发。不出图，只检查。
+    delay(DRIVE_IDLE_MS + 100);
+    step();
+    if (!s_drive_showing) { fprintf(stderr, "FAIL: 闲置后没进驾驶页\n"); return 1; }
+    int keys_before = g_keys_sent;
+    g_enc_pressed = true;
+    step();
+    if (s_drive_showing) { fprintf(stderr, "FAIL: 按下没唤醒\n"); return 1; }
+    delay(100);
+    g_enc_pressed = false;
+    g_enc_click_pending = true; // 松手了，旋钮模块在等双击窗口
+    step();
+    // 中间 loop() 卡了很久（比双击窗口还长），吞事件也不能提前结束
+    delay(ENC_DOUBLE_CLICK_WINDOW_MS + 300);
+    step();
+    g_enc_click_pending = false;
+    g_enc_click = true; // 唤醒那一下的单击此刻才报出来
+    step();
+    if (g_keys_sent != keys_before) { fprintf(stderr, "FAIL: 唤醒那一下的单击被发给了手机\n"); return 1; }
+    step();
+    g_enc_click = true;
+    step();
+    if (g_keys_sent != keys_before + 1) { fprintf(stderr, "FAIL: 唤醒之后的单击没发出去\n"); return 1; }
+    printf("驾驶页按键唤醒：唤醒那一下被吞掉，之后的单击正常发出 ✓\n");
 
     // --- 断线重连 ---
     g_on_disconnected();

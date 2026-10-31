@@ -38,3 +38,13 @@ bool encoder_take_double_click();
 // "按住按键几秒钟触发清除配对信息"这种一次性检测用——那时候只关心
 // "这一刻按没按着"，不需要 encoder_poll_button() 那一整套状态机。
 bool encoder_is_button_pressed();
+
+// 消抖之后的按下状态（encoder_poll_button() 维护）。跟上面的原始读数不同，
+// 按键抖动、干扰造成的一两次毛刺不会让它变。驾驶页唤醒用这个。
+bool encoder_is_button_down();
+
+// 按键这边彻底没事了：已经（消抖后）松开，没有还在等双击窗口的单击，单击/
+// 双击/长按事件也都被取走了。驾驶页按键唤醒时，这一下（含双击的第二下）
+// 产生的事件要全部丢掉，丢到这里返回 true 为止——按状态判断，不靠定时器，
+// loop() 偶尔卡一下也不会漏。
+bool encoder_is_idle();

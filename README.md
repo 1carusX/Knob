@@ -44,7 +44,14 @@ flowchart LR
 │       └── kotlin/cn/icarus/knob/
 │           ├── api/               # 与壳完全相同的契约副本（改动须两边同步）
 │           └── plugin/
-│               ├── MainPlugin.kt      # KnobPlugin 接口实现（入口 + 交互状态机）
+│               ├── MainPlugin.kt      # KnobPlugin 接口实现（入口 + 停靠点状态机 + 页面路由）
+│               ├── page/              # 触屏页面，一个页面一个文件
+│               ├── CarCommands.kt     # onCommand / onQuery 命令清单
+│               ├── CarActions.kt      # 停靠点的车控读写（空调、座椅）
+│               ├── CarPermissions.kt  # 车控运行时权限（只在用户点按钮时申请）
+│               ├── StartupCheck.kt    # 启动自检（通过才连旋钮）
+│               ├── KnobOta.kt         # 旋钮固件自动升级
+│               ├── DriveFeed.kt       # 旋钮驾驶页的数据源
 │               ├── BleManager.kt      # 自定义 BLE GATT：扫描配对、重连、按键/显示编解码、固件 OTA
 │               ├── FirmwareBundle.kt  # 从插件包里读出并校验旋钮固件
 │               ├── CarControl.kt      # 车控引擎（BYDAUTO 调用）

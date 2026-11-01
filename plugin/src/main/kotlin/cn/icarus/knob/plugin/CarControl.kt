@@ -45,8 +45,8 @@ class CarControl(private val logger: KnobHost) {
         // 现有功能用到的 dangerous 级权限（*_COMMON）。壳 manifest 声明了全部
         // BYDAUTO 权限，插件不自动申请：用户在启动自检页 / 自检页上点「申请」
         // 按钮才申请（按 PERM_GROUPS 逐个功能列）；车控操作前只用
-        // MainPlugin.hasPermissions 查一下，缺了就不执行。新功能用到新设备就在
-        // 这里加一个、在 PERM_GROUPS 加一行，并在功能入口调 hasPermissions。
+        // CarPermissions.has 查一下，缺了就不执行。新功能用到新设备就在
+        // 这里加一个、在 PERM_GROUPS 加一行，并在功能入口调 permissions.has。
         // 签名级 GET/SET 装车即授，不用申请。
         const val PERM_AC = "android.permission.BYDAUTO_AC_COMMON"             // 空调温度/分控
         const val PERM_SETTING = "android.permission.BYDAUTO_SETTING_COMMON"   // 座椅加热/通风

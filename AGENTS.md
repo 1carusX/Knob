@@ -32,7 +32,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `app/src/byd/java/cn/icarus/knob/PlatformConfig.kt`、`app/src/generic/java/cn/icarus/knob/PlatformConfig.kt` | 同包同名对象，仅 `byd` 一份非空：`statusPermissions`（状态日志要打印的全部权限）。车控权限的运行时申请不在壳里，归插件（见 `MainPlugin.kt` 一行）。跟 `plugin/` 的 `BuildFlags.kt` 是同一个"同路径两份、值不同"套路 |
+| `app/src/byd/java/cn/icarus/knob/PlatformConfig.kt`、`app/src/generic/java/cn/icarus/knob/PlatformConfig.kt` | 同包同名对象，仅 `byd` 一份非空：`statusPermissions`（状态日志要打印的全部权限）。车控权限的运行时申请不在壳里，归插件（见 `CarPermissions.kt` 一行）。跟 `plugin/` 的 `BuildFlags.kt` 是同一个"同路径两份、值不同"套路 |
 | `app/src/byd/AndroidManifest.xml` | manifest overlay，编译期合入基座，声明 114 个 `BYDAUTO_*` 权限：实车列出的全部 20 个 `*_COMMON`（均为 dangerous 级），加上按 `BYDAUTO_<设备>_GET/SET` 命名补全的各设备 GET/SET（signature 级，车机上查不到定义）。`PlatformConfig.statusPermissions` 与它一一对应；`generic` 没有这份文件、也就没有这些权限 |
 | `app/src/main/java/cn/icarus/knob/api/KnobPlugin.kt` | 壳↔DEX 契约接口（四功能域，见下） |
 | `app/src/main/java/cn/icarus/knob/api/KnobHost.kt` | 插件反向调壳的能力：只剩 `log`——BLE 连接整体归插件自己的 `BleManager` 管，不再经壳转发 |
@@ -48,9 +48,16 @@
 
 | 文件 | 职责 |
 |------|------|
-| `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域路由 + 自管页面栈 + 启动自检（`runStartupCheck`：`init` 时只读检查 `CarControl.PERM_GROUPS` 里 `required` 的功能权限齐不齐、设备能不能初始化，通过才 `bleManager.start()` 连旋钮、显示车控页；没通过固定显示启动自检页，列出缺的权限和申请按钮，授权后自动重查）+ 旋钮驾驶页的数据源（车速设备监听，限频推给旋钮，读不到车速就不推）+ 车控权限：只由用户在启动自检页 / 自检页点「申请」按钮申请（`requestPermissionsByButton`，借壳 Activity 弹窗，结果经 `perm.result` 回来）；调温、调座椅等车控操作前只用 `hasPermissions` 查，缺了就不执行、记一笔，不会顺带弹窗 |
+| `src/main/kotlin/cn/icarus/knob/plugin/MainPlugin.kt` | `KnobPlugin` 实现：四功能域入口 + 停靠点状态机（当前停靠点、车辆状态、旋钮/触屏按键、`syncToKnob` 同步给旋钮）+ 状态持久化 + 页面路由（`refreshCurrentPage` 决定显示哪页，页面本身在 `page/`）。下面几块各自一个文件，`MainPlugin` 持有它们的实例，别的文件要读写的成员是 `internal` |
+| `src/main/kotlin/cn/icarus/knob/plugin/CarCommands.kt` | `onCommand` / `onQuery` 的命令清单（`runCommand` / `runQuery`），统一结果 Map |
+| `src/main/kotlin/cn/icarus/knob/plugin/CarActions.kt` | 停靠点的车控读写：`commitAc`（联动/分控提交顺序）、`commitSeatLevel`、`refreshAcTemperatures`；模拟版只打日志 |
+| `src/main/kotlin/cn/icarus/knob/plugin/CarPermissions.kt` | 车控运行时权限：只由用户在启动自检页 / 自检页点「申请」按钮申请（`requestByButton`，借壳 Activity 弹窗，结果经 `perm.result` 回来 → `handleResult`）；调温、调座椅等车控操作前只用 `has` 查，缺了就不执行、记一笔，不会顺带弹窗 |
+| `src/main/kotlin/cn/icarus/knob/plugin/StartupCheck.kt` | 启动自检：`init` 时只读检查 `CarControl.PERM_GROUPS` 里 `required` 的功能权限齐不齐、设备能不能初始化，通过才回调 `MainPlugin.onStartupPassed`（`bleManager.start()` 连旋钮、显示车控页）；没通过固定显示启动自检页，列出缺的权限和申请按钮，授权后自动重查 |
+| `src/main/kotlin/cn/icarus/knob/plugin/KnobOta.kt` | 旋钮固件自动升级：连上读到版本跟插件包里的固件比，需要就开始 OTA；同一目标版本最多试 2 次，重新导入插件包清零；升级中 `percent` 非 null，页面固定显示升级页 |
+| `src/main/kotlin/cn/icarus/knob/plugin/DriveFeed.kt` | 旋钮驾驶页的数据源：车速设备监听，限频推给旋钮（slot `drive`），读不到车速就不推；模拟版用假数据 |
+| `src/main/kotlin/cn/icarus/knob/plugin/page/` | 触屏页面，一个页面一个文件：`HomePage`（未连接旋钮时的连接页）、`AcPage`（空调联动/分控）、`SeatPage`（座椅）、`OtaPage`（旋钮升级中）、`StartupPage`（启动自检没通过）、`SelfTestPage`（一键自检，自己管跑测试的状态，是个类）；`PermissionSection` 是启动自检页和自检页共用的权限区，`PageParts` 是共用零件（自检按钮、停靠点页底部一排）。页面都写成 `MainPlugin` 的扩展函数，只按插件当前状态画；状态和业务逻辑留在 `MainPlugin`，页面要读写的成员是 `internal`。新增页面 = 这里加一个文件 + `MainPlugin.pages` 注册一行 |
 | `src/main/kotlin/cn/icarus/knob/plugin/BleManager.kt` | 手机↔ESP32 旋钮唯一的 BLE 通道（自定义 GATT，不是标准 HID）：认哪个设备、扫描/配对、断线重连轮询、按键 NOTIFY 解码、显示数据 WRITE 编码，全部归插件自己管，不经壳。还负责读旋钮固件版本（标准 0x180A 服务）和固件 OTA 发送。显示写入按消息种类（`write` 的 `slot`：停靠点 / 亮度 / 驾驶）分开排队，各留最新一份。生命周期绑定插件实例——重新导入 `plugin.dex` 会连带断开当前 BLE 连接（`MainPlugin` 通过 `onKeyEvent`/`onConnectionStateChanged`/`onCandidateFound`/`onFirmwareInfo`/`onOtaProgress`/`onOtaResult` 等回调属性接收事件，不是接口方法） |
-| `src/main/kotlin/cn/icarus/knob/plugin/FirmwareBundle.kt` | 从壳存下的插件包（zip）里读出 `firmware/firmware.bin` 并按 `manifest.json` 校验大小和 SHA-256；`MainPlugin.maybeStartOta` 据此决定要不要自动升级旋钮 |
+| `src/main/kotlin/cn/icarus/knob/plugin/FirmwareBundle.kt` | 从壳存下的插件包（zip）里读出 `firmware/firmware.bin` 并按 `manifest.json` 校验大小和 SHA-256；`KnobOta` 据此决定要不要自动升级旋钮 |
 | `src/main/kotlin/cn/icarus/knob/plugin/CarControl.kt` | 车控引擎：BYDAUTO 设备初始化 / 空调（温度·开关·风量·风向·循环·分控）/ 座椅通风·加热 / 环境光传感器读取 |
 | `src/main/kotlin/cn/icarus/knob/plugin/PluginSelfTest.kt` | 一键全量自检：逐项回调结果，`MainPlugin` 的自检页（叠在停靠点上，返回键关闭）据此逐项显示，跑完列出现有功能缺的权限和申请按钮 |
 | `src/main/kotlin/cn/icarus/knob/api/` | 与壳 `api/` 逐字节相同的三个契约文件（KnobPlugin / KnobHost / Ui） |
@@ -69,7 +76,7 @@
 | `src/fonts/` | LVGL 字体（数字 Barlow Semi Condensed、中文 Noto Sans SC，只收录用到的字，新增上屏中文要把三份 `font_zh_*` 都重新生成；`font_num_92/80/44/22` 是等宽数字，重新生成前要先用同目录 `freeze_tnum.mjs`（Node，不装包）把 tnum 字形固化进字体，否则拧动时数字会左右跳；做法见 `docs/设计/旋钮圆屏UI/README.md`「固件实现」）。同目录 `OFL-*.txt` 是两款字体的许可证（SIL OFL 1.1），字体子集随固件分发就必须带着，不能删 |
 | `simulate/` | 电脑上的屏幕模拟（CMake 工程）：`render.cpp` 直接 `#include "../src/main.cpp"`、`src/ui/*.cpp` 单独编译，把 Arduino/屏幕/旋钮/BLE 换成假实现，用真 LVGL 渲染各状态截图和动画 PNG（APNG 由 render 自己写，不依赖图像库）；改界面先在这里对照设计稿，不用烧板子 |
 
-> 新增车控功能 = 只改插件（`CarControl.kt` 加方法 + `MainPlugin.kt` 加一条 `when` 分支）+ 重新 `pluginDex`，**壳不用动、不用重签**。
+> 新增车控功能 = 只改插件（`CarControl.kt` 加方法 + `CarCommands.kt` 加一条 `when` 分支；要旋钮能调就再加停靠点，见 `MainPlugin.kt`、`CarActions.kt`、`page/`）+ 重新 `pluginDex`，**壳不用动、不用重签**。
 
 ### KnobPlugin 契约（四功能域）
 
@@ -92,7 +99,7 @@ fun onDestroy()
 - `onEvent("ui.bind", {"container": ViewGroup})` —— `KnobActivity.onCreate` 把右半边容器交给插件，插件开始渲染并自管页面栈。
 - `onEvent("ui.unbind", {})` —— `KnobActivity.onDestroy` 通知插件断开对该容器/View 树的持有。
 
-**运行时权限也走事件域**：壳 manifest 声明全部权限，插件**只在用户点按钮时申请**，不一次性全申请，也不在用功能时弹窗：启动自检没通过时启动自检页按功能给申请按钮（授权后自动重查），自检页跑完按 `CarControl.PERM_GROUPS` 逐个功能列出 COMMON 和签名级 GET/SET 的状态、缺 COMMON 的给申请按钮，用户点哪个申请哪个。调温、调座椅、`onCommand`/`onQuery` 的车控读写这些入口只用 `hasPermissions` 查（空调→`AC_COMMON`，座椅→`SETTING_COMMON`），缺了就不执行、日志记一条"没执行：缺 …"；完整自检是诊断，照常调用、没权限的项记失败。插件从 `ui.bind` 交来的容器的 context 剥出 `KnobActivity`，自己调 `requestPermissions`（请求码 1000，壳自己的蓝牙是 2000）；系统把结果回调给 `KnobActivity`，壳对不是自己发起的请求码原样转发 `onEvent("perm.result", {"requestCode": Int, "permissions": List<String>, "grantResults": List<Int>})`。插件只能申请壳 manifest 已声明的权限（byd 壳一次声明了全部 BYDAUTO 权限），所以新功能用到新设备只改插件（`CarControl` 加一个 `PERM_*`、在 `PERM_GROUPS` 加一行——真正在用就标 `required`，启动自检会拦——+ 功能入口调 `hasPermissions`），不用重签壳。申请只能由用户点申请按钮触发，不能放在页面刷新、`ui.bind` 这类自动路径上（车机上 `onResume` 高频触发，会死循环）。
+**运行时权限也走事件域**：壳 manifest 声明全部权限，插件**只在用户点按钮时申请**，不一次性全申请，也不在用功能时弹窗：启动自检没通过时启动自检页按功能给申请按钮（授权后自动重查），自检页跑完按 `CarControl.PERM_GROUPS` 逐个功能列出 COMMON 和签名级 GET/SET 的状态、缺 COMMON 的给申请按钮，用户点哪个申请哪个。调温、调座椅、`onCommand`/`onQuery` 的车控读写这些入口只用 `CarPermissions.has` 查（空调→`AC_COMMON`，座椅→`SETTING_COMMON`），缺了就不执行、日志记一条"没执行：缺 …"；完整自检是诊断，照常调用、没权限的项记失败。插件从 `ui.bind` 交来的容器的 context 剥出 `KnobActivity`，自己调 `requestPermissions`（请求码 1000，壳自己的蓝牙是 2000）；系统把结果回调给 `KnobActivity`，壳对不是自己发起的请求码原样转发 `onEvent("perm.result", {"requestCode": Int, "permissions": List<String>, "grantResults": List<Int>})`。插件只能申请壳 manifest 已声明的权限（byd 壳一次声明了全部 BYDAUTO 权限），所以新功能用到新设备只改插件（`CarControl` 加一个 `PERM_*`、在 `PERM_GROUPS` 加一行——真正在用就标 `required`，启动自检会拦——+ 功能入口调 `permissions.has`），不用重签壳。申请只能由用户点申请按钮触发，不能放在页面刷新、`ui.bind` 这类自动路径上（车机上 `onResume` 高频触发，会死循环）。
 
 ⚠️ **壳进程常驻、Activity 反复创建销毁**，所以 `ui.unbind` 是必须的：插件（静态持有）若继续引用旧容器，会泄漏已销毁的 Activity，且下次 `ui.bind` 复用旧 View 时抛 `already has a parent`。Activity 销毁**只解绑 UI，绝不能 `PluginLoader.unload()`**（那会连插件状态和外设连接一起丢掉）。
 
@@ -176,6 +183,6 @@ cd firmware && pio run -e pcb -t upload        # V2 板用 -e pcb_v2，开发板
 | 问题 | 位置 | 说明 |
 |------|------|------|
 | `api/` 三个类被打进 dex | `plugin/build.gradle.kts` 的 `pluginJar` | 双亲委派下运行时实际用壳的类，暂不致命；若将来把 parent 改成 null 会 `ClassCastException` |
-| OTA 没有回滚 | `firmware/src/ble.cpp`、`MainPlugin.maybeStartOta` | 新固件能启动、能连蓝牙但有 bug 时，导入带旧固件的插件包降级；起不来或连不上蓝牙只能 USB 刷 |
+| OTA 没有回滚 | `firmware/src/ble.cpp`、`KnobOta.maybeStart` | 新固件能启动、能连蓝牙但有 bug 时，导入带旧固件的插件包降级；起不来或连不上蓝牙只能 USB 刷 |
 | OTA 已在手机验证，车机（Android 12）未验证 | `docs/验证结论.md` 固件 OTA 一节 | zip 插件包加载、开机自动加载、OTA 都待车机实测 |
 | `generic` 变体误配真实 `plugin.dex` 时崩溃无提示 | `plugin/.../CarControl.kt` 的 `bydauto.*` 硬依赖 | 表现是 `NoClassDefFoundError`，日志不会直接说明原因是插件变体配错了；已知问题，暂不加运行时检测（见 §2 对应约束行） |

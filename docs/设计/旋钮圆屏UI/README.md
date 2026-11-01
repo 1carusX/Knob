@@ -71,7 +71,7 @@ ESP32-S3 旋钮上 240×240 圆屏（GC9A01）的新视觉方案：深色仪表�
 
 颜色语义：绿色原本只表示「成功 / 升级」，红色原本是座椅加热 2 档 / 温度最热端；在驾驶页里绿 = 油门、红 = 刹车，跟车上的习惯一致，没有引入新颜色。
 
-实现（固件 `firmware/src/ui/page_drive.cpp` + `main.cpp`，插件 `MainPlugin.kt` 的「驾驶数据」一节）：
+实现（固件 `firmware/src/ui/page_drive.cpp` + `main.cpp`，插件 `DriveFeed.kt`）：
 - **固件**：`page_drive.cpp` 的 `redraw_drive()` / `draw_drive_dial()` 画驾驶页；`main.cpp` 的 `update_drive()` 做闲置计时（`DRIVE_IDLE_MS` = 10 秒）和唤醒，唤醒看的是消抖后的按键状态（`encoder_is_button_down()`，抖动、干扰不会误唤醒）；按下按键唤醒时 `s_swallow_button` 把这一下的单击/双击/长按全部丢掉，也不画长按进度环，一直丢到旋钮模块彻底空闲（`encoder_is_idle()`：松手、单击不再等双击窗口、事件都取走了）——按状态判断不靠定时器，`loop()` 偶尔卡一下也不会漏。
 - **字体**：两头读数新生成了 `font_num_22`（等宽数字 `0123456789`，同样先过 `freeze_tnum.mjs`）和 `font_num_13`（只有 `%`）；`-` 本来就在 `font_num_92` 里。画面上没有中文，`font_zh_*` 没动。
 - **插件推送**：驾驶数据是单独一种消息 `{"speed": 62, "throttle": 28, "brake": 0}`（`speed` 整数 km/h，踏板 0~100，读不到车速时不带 `speed`），不管旋钮显示哪页都推，固件存着最新一份；数值变了才推、最多 5 次/秒，旋钮刚连上补推一份。`BleManager.write` 的排队按消息种类（`slot`：停靠点 / 亮度 / 驾驶）分开，各留最新一份，频繁的驾驶数据不会把停靠点同步顶掉。

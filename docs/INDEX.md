@@ -35,4 +35,4 @@
 - 想知道"为什么直接车控不行" → `验证结论.md`（结论唯一来源）
 - 想知道"现在该怎么改代码" → `项目策略备忘录.md` + `ROADMAP.md` + `AGENTS.md`
 - 想更新旋钮固件 / 了解 OTA → `AGENTS.md` §5（流程）+ `项目历程与架构.md` 阶段 9 与 §四（设计与协议）+ `旋钮-最小硬件调试方案.md` §5.1（版本号、USB 刷写）
-- 想加一个车控功能 → `壳-DEX热加载架构设计.md`（架构）+ `plugin/` 的 `CarControl.kt` 与 `MainPlugin.kt` 路由 + `使用与验证指南.md`（返回码）
+- 想加一个车控功能 → `壳-DEX热加载架构设计.md`（架构）+ `plugin/` 的 `CarControl.kt` 与 `CarCommands.kt` 路由（旋钮停靠点见 `MainPlugin.kt`） + `使用与验证指南.md`（返回码）

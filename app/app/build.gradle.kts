@@ -15,8 +15,8 @@ android {
         // minSdk / targetSdk 同样来自仓库根目录 gradle/libs.versions.toml
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
     }
 
     // 按目标平台分两个变体：比亚迪车机（含 BYDAUTO 权限，见 src/byd/）vs

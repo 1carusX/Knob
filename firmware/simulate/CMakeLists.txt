@@ -1,4 +1,4 @@
-# 在电脑上用真正的固件界面代码（src/main.cpp）渲染各状态截图，不用烧板子。
+# 在电脑上用真正的固件界面代码（src/main.cpp + src/ui/）渲染各状态截图，不用烧板子。
 # 原理见 render.cpp 开头的注释。需要 CMake、gcc/g++ 和 zlib 开发头文件，别的都不用。
 #
 #   cmake -B build                           # 第一次先配置（之后改了代码直接 build 就行）
@@ -22,6 +22,7 @@ if(NOT LVGL_SRCS)
     message(FATAL_ERROR "${LVGL_DIR} 下没有 LVGL 源码：先 git submodule update --init firmware/lib/lvgl，或者 cmake -B build -DLVGL_DIR=<路径>")
 endif()
 file(GLOB FONT_SRCS CONFIGURE_DEPENDS ${FW_DIR}/src/fonts/*.c)
+file(GLOB UI_SRCS CONFIGURE_DEPENDS ${FW_DIR}/src/ui/*.cpp)
 
 # LVGL 和字体都用固件那份 lv_conf.h（lib/），LV_CONF_INCLUDE_SIMPLE 让 LVGL 按 -I 找它
 add_library(lvgl STATIC ${LVGL_SRCS})
@@ -29,10 +30,10 @@ target_compile_definitions(lvgl PUBLIC LV_CONF_INCLUDE_SIMPLE)
 target_include_directories(lvgl PUBLIC ${FW_DIR}/lib ${LVGL_DIR})
 target_compile_options(lvgl PRIVATE -O2 -w)
 
-# render.cpp 直接 #include 了 ../src/main.cpp，头文件依赖由编译器的 depfile 跟踪，
-# 改了 main.cpp / config.h / lv_conf.h 都会自动重编
+# render.cpp 直接 #include 了 ../src/main.cpp，各画面（src/ui/*.cpp）照常单独编译；
+# 头文件依赖由编译器的 depfile 跟踪，改了 main.cpp / ui/ / config.h / lv_conf.h 都会自动重编
 find_package(ZLIB REQUIRED)
-add_executable(render render.cpp ${FONT_SRCS})
+add_executable(render render.cpp ${UI_SRCS} ${FONT_SRCS})
 set_target_properties(render PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS ON)
 target_compile_definitions(render PRIVATE BOARD_PCB)
 target_include_directories(render PRIVATE stub ${FW_DIR}/include ${FW_DIR}/src)

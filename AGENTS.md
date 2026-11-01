@@ -62,10 +62,12 @@
 |------|------|
 | `include/config.h` | 引脚与板子配置（`BOARD_PCB`（V1）/ `BOARD_PCB_V2` / `BOARD_DEVKIT`，由 `platformio.ini` 的 env 定义）、板子名 `BOARD_NAME`（`pcb` / `pcb_v2` / `devkit`，插件按它确认固件给哪块板子） |
 | `src/ble.cpp` | 自定义 GATT（按键事件 / 显示同步 / OTA 三个特征值）+ 设备信息服务（固件版本 0x2A26、板子名 0x2A27）；OTA 协议见文件内 OTA 一节和 `docs/项目历程与架构.md` §四 |
-| `src/main.cpp` | LVGL 界面、编码器交互、各状态画面（含"固件升级"进度画面，OTA 完成后到点重启）；停靠点画面闲置 10 秒自己切到驾驶页（车速/油门/刹车），第一次操作切回来、这一下只唤醒不执行（`update_drive`），插件的当前停靠点不变 |
+| `src/main.cpp` | 屏幕状态机 + 输入：BLE 回调（配对/连接/显示数据/OTA）、编码器交互、BOOT 键清配对、配对提示/OTA 完成后到点重启；停靠点画面闲置 10 秒自己切到驾驶页（车速/油门/刹车），第一次操作切回来、这一下只唤醒不执行（`update_drive`），插件的当前停靠点不变。改完状态调 `redraw()`，不直接碰界面 |
+| `src/state.h` | `main.cpp` 维护、`ui/` 只读的屏幕状态（`ScreenState`、当前停靠点数值、驾驶数据…），哪些会被 BLE 线程改（标 `volatile`）见文件开头 |
+| `src/ui/` | LVGL 界面，一个画面一个文件：`page_status.cpp`（配对码/未配对/等待连接/连接成功/等待数据/固件升级）、`page_ac.cpp`（空调联动/分控）、`page_seat.cpp`（座椅）、`page_drive.cpp`（驾驶页），各自的 `redraw_*()` 摆文字、`draw_*()` 画环；`ui.cpp`（建控件、摆文字工具、`redraw()` 分发）、`dial.cpp`（环/刻度/图标所在的绘制层、转圈、长按进度环）、`theme.h`（配色 + 字体）。`ui.h` 是给 `main.cpp` 的入口，`ui_internal.h` 是画面之间共用的声明 |
 | `VERSION` / `scripts/version.py` | 人工维护的版本号 + 编译时拼上 git 信息生成 `FW_VERSION`（`0.1.0+<提交>[.dirty.<改动指纹>]`），代码一变版本号就变 |
 | `src/fonts/` | LVGL 字体（数字 Barlow Semi Condensed、中文 Noto Sans SC，只收录用到的字，新增上屏中文要把三份 `font_zh_*` 都重新生成；`font_num_92/80/44/22` 是等宽数字，重新生成前要先用同目录 `freeze_tnum.mjs`（Node，不装包）把 tnum 字形固化进字体，否则拧动时数字会左右跳；做法见 `docs/设计/旋钮圆屏UI/README.md`「固件实现」）。同目录 `OFL-*.txt` 是两款字体的许可证（SIL OFL 1.1），字体子集随固件分发就必须带着，不能删 |
-| `simulate/` | 电脑上的屏幕模拟（CMake 工程）：`render.cpp` 直接 `#include "../src/main.cpp"`，把 Arduino/屏幕/旋钮/BLE 换成假实现，用真 LVGL 渲染各状态截图和动画 PNG（APNG 由 render 自己写，不依赖图像库）；改界面先在这里对照设计稿，不用烧板子 |
+| `simulate/` | 电脑上的屏幕模拟（CMake 工程）：`render.cpp` 直接 `#include "../src/main.cpp"`、`src/ui/*.cpp` 单独编译，把 Arduino/屏幕/旋钮/BLE 换成假实现，用真 LVGL 渲染各状态截图和动画 PNG（APNG 由 render 自己写，不依赖图像库）；改界面先在这里对照设计稿，不用烧板子 |
 
 > 新增车控功能 = 只改插件（`CarControl.kt` 加方法 + `MainPlugin.kt` 加一条 `when` 分支）+ 重新 `pluginDex`，**壳不用动、不用重签**。
 
@@ -116,7 +118,7 @@ cd plugin && ./gradlew pluginDexSimulate
 cd plugin && ./gradlew pluginPackagePcb
 cd plugin && ./gradlew pluginPackagePcb pluginPackagePcbV2
 
-# 旋钮屏幕截图（电脑上用真正的 src/main.cpp + LVGL 渲染各状态，不用烧板子）→ firmware/simulate/out/*.png
+# 旋钮屏幕截图（电脑上用真正的 src/main.cpp + src/ui/ + LVGL 渲染各状态，不用烧板子）→ firmware/simulate/out/*.png
 # 需要 CMake 和 firmware/lib/lvgl 子模块已初始化（或 cmake -B build -DLVGL_DIR=<同版本 LVGL 路径>）；原理见 firmware/simulate/render.cpp 开头
 cd firmware/simulate && cmake -B build && cmake --build build -j        # 第一次要先 cmake -B build 配置，之后只跑 --build
 cd firmware/simulate && cmake --build build -j --target anim            # 动画（转圈、长按提交、固件升级、BOOT 清配对）→ out/anim/

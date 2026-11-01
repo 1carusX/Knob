@@ -71,8 +71,8 @@ ESP32-S3 旋钮上 240×240 圆屏（GC9A01）的新视觉方案：深色仪表�
 
 颜色语义：绿色原本只表示「成功 / 升级」，红色原本是座椅加热 2 档 / 温度最热端；在驾驶页里绿 = 油门、红 = 刹车，跟车上的习惯一致，没有引入新颜色。
 
-实现（固件 `firmware/src/main.cpp`，插件 `MainPlugin.kt` 的「驾驶数据」一节）：
-- **固件**：`DIAL_DRIVE` / `redraw_drive()` 画驾驶页；`update_drive()` 做闲置计时（`DRIVE_IDLE_MS` = 10 秒）和唤醒，唤醒看的是消抖后的按键状态（`encoder_is_button_down()`，抖动、干扰不会误唤醒）；按下按键唤醒时 `s_swallow_button` 把这一下的单击/双击/长按全部丢掉，也不画长按进度环，一直丢到旋钮模块彻底空闲（`encoder_is_idle()`：松手、单击不再等双击窗口、事件都取走了）——按状态判断不靠定时器，`loop()` 偶尔卡一下也不会漏。
+实现（固件 `firmware/src/ui/page_drive.cpp` + `main.cpp`，插件 `MainPlugin.kt` 的「驾驶数据」一节）：
+- **固件**：`page_drive.cpp` 的 `redraw_drive()` / `draw_drive_dial()` 画驾驶页；`main.cpp` 的 `update_drive()` 做闲置计时（`DRIVE_IDLE_MS` = 10 秒）和唤醒，唤醒看的是消抖后的按键状态（`encoder_is_button_down()`，抖动、干扰不会误唤醒）；按下按键唤醒时 `s_swallow_button` 把这一下的单击/双击/长按全部丢掉，也不画长按进度环，一直丢到旋钮模块彻底空闲（`encoder_is_idle()`：松手、单击不再等双击窗口、事件都取走了）——按状态判断不靠定时器，`loop()` 偶尔卡一下也不会漏。
 - **字体**：两头读数新生成了 `font_num_22`（等宽数字 `0123456789`，同样先过 `freeze_tnum.mjs`）和 `font_num_13`（只有 `%`）；`-` 本来就在 `font_num_92` 里。画面上没有中文，`font_zh_*` 没动。
 - **插件推送**：驾驶数据是单独一种消息 `{"speed": 62, "throttle": 28, "brake": 0}`（`speed` 整数 km/h，踏板 0~100，读不到车速时不带 `speed`），不管旋钮显示哪页都推，固件存着最新一份；数值变了才推、最多 5 次/秒，旋钮刚连上补推一份。`BleManager.write` 的排队按消息种类（`slot`：停靠点 / 亮度 / 驾驶）分开，各留最新一份，频繁的驾驶数据不会把停靠点同步顶掉。
 - **数据源**：启动自检通过后，`SPEED_COMMON` + `SPEED_GET` 都授权了才初始化车速设备、注册监听；缺权限或初始化失败就不推，旋钮不会切到驾驶页。之后申请到权限会自动再试。模拟版插件用假数据（8 秒一个周期，车速 10~110 起伏，加速踩油门、减速踩刹车），手机上配 `generic` 壳就能看到驾驶页。
@@ -111,9 +111,9 @@ ESP32-S3 旋钮上 240×240 圆屏（GC9A01）的新视觉方案：深色仪表�
 
 ## 固件实现
 
-已在 `firmware/src/main.cpp` 按本设计实现（`build_ui()` / `dial_draw_cb()` / `redraw_*()`），V1 板（`pcb`）真机跑过一轮，按反馈修改后待复测。
+已在 `firmware/src/ui/` 按本设计实现（一个画面一个文件 `page_*.cpp`：`redraw_*()` 摆文字、`draw_*()` 画环；公共部分在 `ui.cpp` / `dial.cpp`，配色字体在 `theme.h`，分工见 `ui/ui.h` 开头），V1 板（`pcb`）真机跑过一轮，按反馈修改后待复测。
 
-- **环、刻度、图标**：没用 `lv_scale`/`lv_arc`，所有环、刻度、亮点、座椅分页标记、蓝牙/对勾线条图标都在一个全屏透明对象的绘制回调 `dial_draw_cb()` 里按状态用 `lv_draw_line`/`lv_draw_arc`/`lv_draw_rect` 现画；等待连接/等待数据的转圈也在这里画（`draw_spinner()`），不用 `lv_spinner`：照 Material 3 Expressive 的算法，6 秒一个周期、首尾无缝（`s_spinner_style` 还留着 Material 经典款可切换）。长按提交/清配对进度环是独立的叠加层（`s_overlay_percent`），`redraw()` 不碰它。
+- **环、刻度、图标**：没用 `lv_scale`/`lv_arc`，所有环、刻度、亮点、座椅分页标记、蓝牙/对勾线条图标都在一个全屏透明对象的绘制回调（`dial.cpp` 的 `dial_draw_cb()`，调当前画面在 `reset_screen()` 时指定的 `draw_*()`）里用 `lv_draw_line`/`lv_draw_arc`/`lv_draw_rect` 现画；等待连接/等待数据的转圈也在这里画（`draw_spinner()`），不用 `lv_spinner`：照 Material 3 Expressive 的算法，6 秒一个周期、首尾无缝（`s_spinner_style` 还留着 Material 经典款可切换）。长按提交/清配对进度环是独立的叠加层（`set_overlay()`），`redraw()` 不碰它。
 - **未提交状态**：沿用 `s_value != s_synced_value` 判断，表现为琥珀色数字 + 空心原值点 + 「长按确认」；按住出进度环后提示换成「继续按住」。
 - **字体**（`firmware/src/fonts/`，`lv_font_conv` 1.5.3，4bpp，不压缩，不勾 `--lcd`，生成参数见各文件开头的 Opts；许可证 `OFL-*.txt` 同目录）：
   - 数字 Barlow Semi Condensed Medium：`font_num_92`（大数字）、`font_num_80`（分控编辑侧）、`font_num_44`（分控参考侧、配对码）、`font_num_34`（设备名，符号集 `Knob-0123456789ABCDEF`）、`font_num_28`（只有 `%°`）、`font_num_22`（驾驶页两头的百分比数字）、`font_num_13`（驾驶页百分比后面的 `%`）。
@@ -123,5 +123,5 @@ ESP32-S3 旋钮上 240×240 圆屏（GC9A01）的新视觉方案：深色仪表�
   - ⚠️ 新增上屏中文要把字补进三份 `font_zh_*` 的 `--symbols` 重新生成，缺的字直接显示不出来。生成后把文件开头的 include 段换成带 `__has_include` 的写法（1.5.3 默认只认 `lvgl/lvgl.h`，PlatformIO 和 `firmware/simulate` 都找不到）。
 - **分控副驾反向拧**：分控编辑副驾（`ac_split_deputy`）时，`loop()` 里把旋钮的转动量取反，逆时针升温，跟镜像的右半环方向一致。只在固件本地做，插件不知道这回事。
 - **跟设计稿的小差别**：中文正文字号合并成 13/16/20 三档（设计稿里的 15px → 16、18px → 20；座椅座位名单独一份 28，跟设计稿一致）；「请在手机上确认」用的 Medium 字重（设计稿是 400）。
-- **对照验证**：`cd firmware/simulate && cmake -B build && cmake --build build -j` 会用真正的 `main.cpp` + LVGL 在电脑上渲染全部状态（`firmware/simulate/out/`），改完固件先跟本设计稿对照，不用每次烧板子；`--target anim` 出动画。用法见 `firmware/simulate/CMakeLists.txt` 开头。
+- **对照验证**：`cd firmware/simulate && cmake -B build && cmake --build build -j` 会用真正的 `main.cpp` + `ui/` + LVGL 在电脑上渲染全部状态（`firmware/simulate/out/`），改完固件先跟本设计稿对照，不用每次烧板子；`--target anim` 出动画。用法见 `firmware/simulate/CMakeLists.txt` 开头。
 - 插件推送的数据格式没改：座椅的「加热/通风」由 `value` 正负决定，分页标记由 `sub_count`/`sub_index` 决定；分控画面的标题由固件写死「分控」（不用插件发的 `title`），主驾/副驾标签画在数字下方。

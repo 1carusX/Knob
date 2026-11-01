@@ -54,9 +54,13 @@
                     style="@style/KnobChipText" />
             </LinearLayout>
 
+            <!-- 没授权时右边多一个红色「授权」小胶囊，靠 layout_marginEnd="-8dp" 伸进
+                 胶囊的右内边距、离边缘只留 6dp；clipToPadding 要关掉，不然伸进内边距的
+                 那一截会被裁掉，右端圆角缺一块。 -->
             <LinearLayout
                 android:id="@+id/btChip"
                 style="@style/KnobChip"
+                android:clipToPadding="false"
                 android:layout_marginStart="8dp">
 
                 <View
